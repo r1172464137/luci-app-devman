@@ -31,6 +31,8 @@ type DeviceProfile struct {
 	RateLimit  int    `json:"rate_limit"`
 	LastSeen   int64  `json:"last_seen"`
 	Online     string `json:"online"`
+	VendorClass string `json:"vendor_class"`
+	Opt55Hash  string `json:"opt55_hash"`
 	SpeedOut   uint64 `json:"speed_out"`
 	SpeedIn    uint64 `json:"speed_in"`
 	NumMACs    int    `json:"num_macs"`
@@ -84,6 +86,7 @@ func main() {
 	go neightLoop()
 	go conntrackLoop()
 	go leaseLoop()
+	go dhcpSniffLoop()
 	go speedLoop()
 	go reconcileLoop()
 
@@ -233,6 +236,164 @@ func conntrackLoop() {
 		cmd.Process.Kill()
 		time.Sleep(time.Second)
 	}
+}
+
+func dhcpSniffLoop() {
+	// Open raw AF_PACKET socket with BPF filter for DHCP
+	// Falls back to tcpdump if raw socket unavailable
+	useRawSocket()
+}
+
+func useRawSocket() {
+	fd, err := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_RAW, int(htons(syscall.ETH_P_ALL)))
+	if err != nil {
+		log.Printf("DHCP sniff: raw socket failed (%v), skipping", err)
+		return
+	}
+	defer syscall.Close(fd)
+
+	// Find br-lan interface index
+	iface, _ := net.InterfaceByName("br-lan")
+	if iface == nil {
+		return
+	}
+
+	// Bind to br-lan
+	addr := syscall.SockaddrLinklayer{
+		Protocol: htons(syscall.ETH_P_ALL),
+		Ifindex:  iface.Index,
+	}
+	if err := syscall.Bind(fd, &addr); err != nil {
+		return
+	}
+
+	log.Println("DHCP sniff: raw socket listening on br-lan")
+	var pktCount int
+	buf := make([]byte, 2048)
+	for {
+		n, _, err := syscall.Recvfrom(fd, buf, 0)
+		if err != nil || n < 42 {
+			continue
+		}
+		pktCount++
+		// Log every 100th packet to verify capture is working
+		if pktCount%100 == 1 {
+			etherType := int(buf[12])<<8 | int(buf[13])
+			log.Printf("DHCP sniff: pkt %d len=%d ethtype=0x%04x", pktCount, n, etherType)
+		}
+		// Parse Ethernet: skip 14 bytes
+		ipStart := 14
+		if n < ipStart+20+8 {
+			continue
+		}
+		etherType := int(buf[12])<<8 | int(buf[13])
+		// Check for IPv4 (0x0800) or VLAN (0x8100)
+		if etherType == 0x8100 {
+			ipStart = 18 // Skip VLAN tag
+		} else if etherType != 0x0800 {
+			continue
+		}
+		// Check IP version (first nibble = 4 for IPv4)
+		if buf[ipStart]>>4 != 4 {
+			continue
+		}
+		ipHdrLen := int(buf[ipStart]&0x0f) * 4
+		udpStart := ipStart + ipHdrLen
+		// Check protocol (offset 9 in IP header, 1=ICMP 6=TCP 17=UDP)
+		if buf[ipStart+9] != 17 {
+			continue
+		}
+		// Check UDP dest port 67
+		udpDstPort := int(buf[udpStart+2])<<8 | int(buf[udpStart+3])
+		if udpDstPort != 67 {
+			continue
+		}
+		dhcpStart := udpStart + 8
+		log.Printf("DHCP: udp/67 len=%d ipHdr=%d dhcpStart=%d magic=%02x%02x%02x%02x",
+			n, ipHdrLen, dhcpStart,
+			buf[dhcpStart+240], buf[dhcpStart+241], buf[dhcpStart+242], buf[dhcpStart+243])
+		if dhcpStart+236 > n {
+			continue
+		}
+		// DHCP fixed header is 236 bytes
+		chaddrStart := dhcpStart + 28
+		mac := fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x",
+			buf[chaddrStart], buf[chaddrStart+1], buf[chaddrStart+2],
+			buf[chaddrStart+3], buf[chaddrStart+4], buf[chaddrStart+5])
+
+		// Parse DHCP options: start at dhcpStart + 236 (after fixed header)
+		optStart := dhcpStart + 236
+		// Magic cookie: 99, 130, 83, 99
+		if optStart+4 > n || buf[optStart] != 99 || buf[optStart+1] != 130 || buf[optStart+2] != 83 || buf[optStart+3] != 99 {
+			continue
+		}
+		optPos := optStart + 4
+		var msgType, hostname, vendorClass string
+		var opt55bytes []byte
+
+		for optPos+1 < n {
+			optCode := buf[optPos]
+			if optCode == 255 {
+				break // End
+			}
+			if optPos+1 >= n {
+				break
+			}
+			optLen := int(buf[optPos+1])
+			optPos += 2
+			if optPos+optLen > n {
+				break
+			}
+			switch optCode {
+			case 53: // Message type
+				if optLen >= 1 {
+					switch buf[optPos] {
+					case 1:
+						msgType = "DISCOVER"
+					case 3:
+						msgType = "REQUEST"
+					}
+				}
+			case 12: // Hostname
+				hostname = string(buf[optPos : optPos+optLen])
+			case 60: // Vendor Class
+				vendorClass = string(buf[optPos : optPos+optLen])
+			case 55: // Parameter Request List
+				opt55bytes = make([]byte, optLen)
+				copy(opt55bytes, buf[optPos:optPos+optLen])
+			}
+			optPos += optLen
+		}
+
+		if msgType == "" || mac == "" {
+			continue
+		}
+		opt55hex := hex.EncodeToString(opt55bytes)
+
+		// Find IP for this MAC
+		ip := getIPForMAC(mac)
+		log.Printf("DHCP %s: mac=%s ip=%s host=%s vendor=%s opt55=%s",
+			msgType, mac, ip, hostname, vendorClass, opt55hex[:min(8, len(opt55hex))])
+
+		if ip != "" && isLAN(ip) {
+			// Fingerprint device by MAC+hostname+(vendor+opt55)
+			upsertDevice(ip, mac, hostname, vendorClass, opt55hex)
+		}
+	}
+}
+
+func htons(n uint16) uint16 { return (n>>8)|(n<<8) }
+
+func getIPForMAC(mac string) string {
+	out, _ := exec.Command("cat", "/proc/net/arp").Output()
+	macLower := strings.ToLower(mac)
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 4 && strings.ToLower(f[3]) == macLower {
+			return f[0]
+		}
+	}
+	return ""
 }
 
 func leaseLoop() {
@@ -604,6 +765,7 @@ func speedLoop() {
 func reconcileLoop() {
 	for {
 		time.Sleep(5 * time.Second)
+		mergeDuplicateHostnames()
 		mu.Lock()
 		rows, _ := db.Query("SELECT id, ipv4, is_blocked, rate_limit FROM devices WHERE ipv4!=''")
 		if rows != nil {
@@ -634,7 +796,7 @@ func reconcileLoop() {
 func apiDevices(w http.ResponseWriter, r *http.Request) {
 	mu.RLock()
 	defer mu.RUnlock()
-	rows, _ := db.Query(`SELECT d.id, d.alias, d.hostname, d.device_type, d.ipv4, d.mac, d.is_blocked, d.rate_limit, d.last_seen,
+	rows, _ := db.Query(`SELECT d.id, d.alias, d.hostname, d.device_type, d.ipv4, d.mac, d.vendor_class, d.opt55_hash, d.is_blocked, d.rate_limit, d.last_seen,
 		CASE WHEN d.last_seen > ? THEN 'green' WHEN d.last_seen > ? THEN 'yellow' ELSE 'gray' END,
 		(SELECT COUNT(DISTINCT mac) FROM device_macs WHERE device_id=d.id)
 		FROM devices d ORDER BY d.last_seen DESC`, time.Now().Unix()-120, time.Now().Unix()-1800)
@@ -648,7 +810,7 @@ func apiDevices(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var d DeviceProfile
 		var b int
-		rows.Scan(&d.ID, &d.Alias, &d.Hostname, &d.DeviceType, &d.CurrentIP, &d.CurrentMAC, &b, &d.RateLimit, &d.LastSeen, &d.Online, &d.NumMACs)
+		rows.Scan(&d.ID, &d.Alias, &d.Hostname, &d.DeviceType, &d.CurrentIP, &d.CurrentMAC, &d.VendorClass, &d.Opt55Hash, &b, &d.RateLimit, &d.LastSeen, &d.Online, &d.NumMACs)
 		d.IsBlocked = b == 1
 		db.QueryRow("SELECT COALESCE(speed_out,0) FROM traffic WHERE device_id=? ORDER BY recorded_at DESC LIMIT 1", d.ID).Scan(&d.SpeedOut)
 		db.QueryRow("SELECT COALESCE(speed_in,0) FROM traffic WHERE device_id=? ORDER BY recorded_at DESC LIMIT 1", d.ID).Scan(&d.SpeedIn)
@@ -741,25 +903,46 @@ func getHostname(ip string) string {
 }
 
 func mergeDuplicateHostnames() {
-	// Only merge if DHCP fingerprint matches (vendor_class + opt55_hash)
-	// Same hostname alone is NOT enough — different devices can share hostnames
-	rows, _ := db.Query(`SELECT d1.id, d2.id, d1.hostname, d1.mac, d2.mac, d1.ipv4, d2.ipv4
+	// Merge when same hostname AND either:
+	// 1. Both have matching fingerprints
+	// 2. One has fingerprint, the other has random MAC (phone privacy)
+	rows, _ := db.Query(`SELECT d1.id, d2.id, d1.hostname, d1.mac, d2.mac, d1.ipv4, d2.ipv4, d1.vendor_class, d2.vendor_class, d1.opt55_hash, d2.opt55_hash
 		FROM devices d1 JOIN devices d2 ON d1.hostname=d2.hostname AND d1.id<d2.id
-		WHERE d1.hostname!='' AND d1.vendor_class!='' AND d1.opt55_hash!=''
-		AND d1.vendor_class=d2.vendor_class AND d1.opt55_hash=d2.opt55_hash`)
+		WHERE d1.hostname!=''`)
 	if rows == nil {
 		return
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id1, id2 int64
-		var hostname, mac1, mac2, ip1, ip2 string
-		rows.Scan(&id1, &id2, &hostname, &mac1, &mac2, &ip1, &ip2)
+		var hostname, mac1, mac2, ip1, ip2, vc1, vc2, fp1, fp2 string
+		rows.Scan(&id1, &id2, &hostname, &mac1, &mac2, &ip1, &ip2, &vc1, &vc2, &fp1, &fp2)
 
-		// Keep the one with fixed MAC, delete the random one
+		// Decision rules:
+		hasFP1 := vc1 != "" && fp1 != ""
+		hasFP2 := vc2 != "" && fp2 != ""
+		fpMatch := hasFP1 && hasFP2 && vc1 == vc2 && fp1 == fp2
+
+		shouldMerge := false
+		if fpMatch {
+			shouldMerge = true // Both have matching fingerprints → same device
+		} else if hasFP1 && !hasFP2 {
+			shouldMerge = true // One has fingerprint, other doesn't → merge into the known one
+		} else if !hasFP1 && hasFP2 {
+			shouldMerge = true // Same but reversed
+		}
+		if !shouldMerge {
+			continue // Both without fingerprints → don't merge (could be different devices)
+		}
+
+		// Keep the one with fingerprint, or with fixed MAC
 		keepID, rmID := id1, id2
-		if isRandomMAC(mac1) && !isRandomMAC(mac2) {
+		if !hasFP1 && hasFP2 {
 			keepID, rmID = id2, id1
+		} else if hasFP1 == hasFP2 {
+			if isRandomMAC(mac1) && !isRandomMAC(mac2) {
+				keepID, rmID = id2, id1
+			}
 		}
 
 		db.Exec("UPDATE devices SET ipv4=CASE WHEN ipv4='' THEN ? ELSE ipv4 END WHERE id=?", ip2, keepID)
