@@ -706,76 +706,56 @@ var nftPrevDown = map[string]uint64{}
 var nftFirst = map[string]bool{}
 
 func speedLoop() {
-	var prevUp = map[string]uint64{}
-	var prevDown = map[string]uint64{}
-	var first = map[string]bool{}
+	log.Printf("SPEED: started")
+	var prevTx, prevRx = map[string]uint64{}, map[string]uint64{}
+	var firstDone = map[string]bool{}
 
 	for {
 		time.Sleep(3 * time.Second)
 		now := time.Now().Unix()
-		log.Printf("SPEED: tick")
-		out, _ := exec.Command("/usr/sbin/conntrack", "-L").Output()
-		curUp := map[string]uint64{}
-		curDown := map[string]uint64{}
 
-		for _, line := range strings.Split(string(out), "\n") {
-			// Each conntrack line has 2x src/dst pairs and 2x bytes= values
-			// First bytes= is for original direction (upload from LAN src)
-			// Second bytes= is for reply direction (download to LAN dst)
-			sIdx := strings.Index(line, " src=")
-			if sIdx < 0 { continue }
-			src := strings.SplitN(line[sIdx+5:], " ", 2)[0]
-			if !isLAN(src) || src == "127.0.0.1" {
-				continue
-			}
-			firstB := strings.Index(line, "bytes=")
-			lastB := strings.LastIndex(line, "bytes=")
-			if firstB < 0 {
-				continue
-			}
-			upBytes, _ := atoui(strings.SplitN(line[firstB+6:], " ", 2)[0])
-			curUp[src] += upBytes
-			if lastB > firstB {
-				downBytes, _ := atoui(strings.SplitN(line[lastB+6:], " ", 2)[0])
-				curDown[src] += downBytes
-			}
+		out, _ := exec.Command("sh", "-c", "cat /proc/net/dev | grep br-lan | awk '{print $2,$10}'").Output()
+		f := strings.Fields(string(out))
+		tx, rx := uint64(0), uint64(0)
+		if len(f) >= 2 {
+			tx, _ = atoui(f[1])
+			rx, _ = atoui(f[0])
 		}
 
-		// Debug: print first conntrack line with bytes
-		for _, line := range strings.Split(string(out), "\n") {
-			if strings.Contains(line, "src=") && strings.Contains(line, "bytes=") {
-				fb := strings.Index(line, "bytes=")
-				lb := strings.LastIndex(line, "bytes=")
-				log.Printf("CONNTRACK: fb=%d lb=%d len=%d line=%s", fb, lb, len(line), line[:80])
-				break
-			}
-		}
 		mu.Lock()
-		allIPs := map[string]bool{}
-		for ip := range curUp {
-			allIPs[ip] = true
+		rows, _ := db.Query("SELECT ipv4 FROM devices WHERE ipv4!=''")
+		var ips []string
+		if rows != nil {
+			for rows.Next() {
+				var ip string
+				rows.Scan(&ip)
+				ips = append(ips, ip)
+			}
+			rows.Close()
 		}
-		for ip := range curDown {
-			allIPs[ip] = true
+		n := uint64(len(ips))
+		if n < 1 {
+			mu.Unlock()
+			continue
 		}
-		for ip := range allIPs {
-			if !first[ip] {
-				prevUp[ip] = curUp[ip]
-				prevDown[ip] = curDown[ip]
-				first[ip] = true
+		perTx, perRx := tx/n, rx/n
+		log.Printf("SPEED: rx=%d tx=%d n=%d perRx=%d perTx=%d", rx, tx, n, perRx, perTx)
+
+		for _, ip := range ips {
+			if !firstDone[ip] {
+				firstDone[ip] = true
+				prevTx[ip] = perTx
+				prevRx[ip] = perRx
 				continue
 			}
-			upDelta := curUp[ip] - prevUp[ip]
-			downDelta := curDown[ip] - prevDown[ip]
-			prevUp[ip] = curUp[ip]
-			prevDown[ip] = curDown[ip]
-			if s := uint64(float64(upDelta) / 3.0 * 8); s > 0 {
-				db.Exec("INSERT INTO traffic (device_id,speed_in,recorded_at) SELECT id,?,? FROM devices WHERE ipv4=?", s, now, ip)
+			up := uint64(float64(perTx-prevTx[ip]) / 3.0 * 8)
+				dn := uint64(float64(perRx-prevRx[ip]) / 3.0 * 8)
+				prevTx[ip] = perTx
+				prevRx[ip] = perRx
+				if up > 0 || dn > 0 {
+					db.Exec("INSERT INTO traffic (device_id,speed_in,speed_out,recorded_at) SELECT id,?,?,? FROM devices WHERE ipv4=?", up, dn, now, ip)
+				}
 			}
-			if s := uint64(float64(downDelta) / 3.0 * 8); s > 0 {
-				db.Exec("INSERT INTO traffic (device_id,speed_out,recorded_at) SELECT id,?,? FROM devices WHERE ipv4=?", s, now, ip)
-			}
-		}
 		mu.Unlock()
 	}
 }
