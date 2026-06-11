@@ -33,8 +33,8 @@ type DeviceProfile struct {
 	Online     string `json:"online"`
 	VendorClass string `json:"vendor_class"`
 	Opt55Hash  string `json:"opt55_hash"`
-	SpeedOut   uint64 `json:"speed_out"`
 	SpeedIn    uint64 `json:"speed_in"`
+	SpeedOut   uint64 `json:"speed_out"`
 	NumMACs    int    `json:"num_macs"`
 }
 
@@ -550,7 +550,7 @@ func updateDev(id int64, ip, mac, hostname, vendorClass, fpHash string, now int6
 		args = append(args, fpHash)
 	}
 	if ip != "" && !strings.Contains(ip, ":") {
-		q += ", ipv4=CASE WHEN ipv4='' THEN ? ELSE ipv4 END"
+		q += ", ipv4=?"
 		args = append(args, ip)
 	}
 	q += " WHERE id=?"
@@ -733,10 +733,11 @@ func speedLoop() {
 		speedMu.Lock()
 		mu.Lock()
 		for ip, total := range curOut {
-			prev, ok := prevBytes[ip]
-			prevBytes[ip] = total
-			if !firstSeen[ip] {
-				firstSeen[ip] = true
+			key := "out:" + ip
+			prev, ok := prevBytes[key]
+			prevBytes[key] = total
+			if !firstSeen[key] {
+				firstSeen[key] = true
 				continue
 			}
 			if !ok {
@@ -745,7 +746,7 @@ func speedLoop() {
 			delta := total - prev
 			speed := uint64(float64(delta) / 3.0 * 8)
 			if speed > 0 {
-				db.Exec("INSERT INTO traffic (device_id,speed_out,recorded_at) SELECT id,?,? FROM devices WHERE ipv4=? AND ipv4!=''", speed, now, ip)
+				db.Exec("INSERT INTO traffic (device_id,speed_in,recorded_at) SELECT id,?,? FROM devices WHERE ipv4=? AND ipv4!=''", speed, now, ip)
 			}
 		}
 		for ip, total := range curIn {
@@ -762,7 +763,7 @@ func speedLoop() {
 			delta := total - prev
 			speed := uint64(float64(delta) / 3.0 * 8)
 			if speed > 0 {
-				db.Exec("INSERT INTO traffic (device_id,speed_in,recorded_at) SELECT id,?,? FROM devices WHERE ipv4=? AND ipv4!=''", speed, now, ip)
+				db.Exec("INSERT INTO traffic (device_id,speed_out,recorded_at) SELECT id,?,? FROM devices WHERE ipv4=? AND ipv4!=''", speed, now, ip)
 			}
 		}
 		mu.Unlock()
@@ -782,6 +783,27 @@ func reconcileLoop() {
 		time.Sleep(5 * time.Second)
 		mergeDuplicateHostnames()
 		mu.Lock()
+		// 1. Block: for each device_id with is_blocked=1, block ALL its IPs
+		blocked, _ := db.Query("SELECT DISTINCT ipv4 FROM devices WHERE is_blocked=1 AND ipv4!=''")
+		if blocked != nil {
+			for blocked.Next() {
+				var ip string
+				blocked.Scan(&ip)
+				exec.Command(scriptDir+"/block.sh", "add", ip).Run()
+			}
+			blocked.Close()
+		}
+		// 2. Unblock: remove IPs that no longer have any blocked device
+		unblocked, _ := db.Query("SELECT DISTINCT ipv4 FROM devices WHERE is_blocked=0 AND ipv4!='' AND ipv4 NOT IN (SELECT ipv4 FROM devices WHERE is_blocked=1)")
+		if unblocked != nil {
+			for unblocked.Next() {
+				var ip string
+				unblocked.Scan(&ip)
+				exec.Command(scriptDir+"/block.sh", "del", ip).Run()
+			}
+			unblocked.Close()
+		}
+		// 3. Rate limits
 		rows, _ := db.Query("SELECT id, ipv4, is_blocked, rate_limit FROM devices WHERE ipv4!=''")
 		if rows != nil {
 			for rows.Next() {
@@ -789,11 +811,6 @@ func reconcileLoop() {
 				var ip string
 				var b, r int
 				rows.Scan(&id, &ip, &b, &r)
-				if b == 1 {
-					exec.Command(scriptDir+"/block.sh", "add", ip).Run()
-				} else {
-					exec.Command(scriptDir+"/block.sh", "del", ip).Run()
-				}
 				if r > 0 {
 					exec.Command(scriptDir+"/limit.sh", "set", fmt.Sprintf("%d", id), ip, fmt.Sprintf("%d", r)).Run()
 				} else {
@@ -814,7 +831,7 @@ func apiDevices(w http.ResponseWriter, r *http.Request) {
 	rows, _ := db.Query(`SELECT d.id, d.alias, d.hostname, d.device_type, d.ipv4, d.mac, d.vendor_class, d.opt55_hash, d.is_blocked, d.rate_limit, d.last_seen,
 		CASE WHEN d.last_seen > ? THEN 'green' WHEN d.last_seen > ? THEN 'yellow' ELSE 'gray' END,
 		(SELECT COUNT(DISTINCT mac) FROM device_macs WHERE device_id=d.id)
-		FROM devices d ORDER BY d.last_seen DESC`, time.Now().Unix()-120, time.Now().Unix()-1800)
+		FROM devices d ORDER BY d.first_seen DESC`, time.Now().Unix()-120, time.Now().Unix()-1800)
 	w.Header().Set("Content-Type", "application/json")
 	if rows == nil {
 		w.Write([]byte("[]"))
@@ -854,6 +871,7 @@ func apiBlock(w http.ResponseWriter, r *http.Request) {
 		v = 1
 	}
 	db.Exec("UPDATE devices SET is_blocked=? WHERE id=?", v, req.DeviceID)
+	// Reconcile will pick it up within 5s and apply the block
 	w.Write([]byte(`{"ok":true}`))
 }
 

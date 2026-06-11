@@ -56,7 +56,7 @@ function load(){
    h+='<td>'+esc(dev.current_ip||'-')+'</td>';
    h+='<td class="dm-mac">'+esc(dev.current_mac||'-')+'</td>';
    h+='<td>'+status(dev.online)+'</td>';
-   h+='<td class="dm-speed">'+fmtSpeed(dev.speed_out||0)+'</td>';
+   h+='<td class="dm-speed">↑'+fmtSpeed(dev.speed_in||0)+' ↓'+fmtSpeed(dev.speed_out||0)+'</td>';
    h+='<td>'+(dev.is_blocked?'<span class="dm-blocked">■</span>':'')+'</td>';
    h+='<td>';
    h+=dev.is_blocked?'<button class="dm-btn dm-btn-unblock" onclick="tb('+dev.id+',0)">Unblock</button>':'<button class="dm-btn dm-btn-block" onclick="tb('+dev.id+',1)">Block</button>';
