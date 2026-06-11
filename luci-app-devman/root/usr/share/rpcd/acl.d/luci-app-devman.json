@@ -1,0 +1,11 @@
+{
+	"luci-app-devman": {
+		"description": "Grant access to Device Manager",
+		"read": {
+			"ubus": { "access": { "luci.devman": ["read"] } }
+		},
+		"write": {
+			"ubus": { "access": { "luci.devman": ["write"] } }
+		}
+	}
+}

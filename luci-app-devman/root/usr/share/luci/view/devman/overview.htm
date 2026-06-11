@@ -1,0 +1,54 @@
+<%+header%>
+<style>
+.dm-wrap{padding:16px}
+.dm-table{width:100%;border-collapse:collapse;font-size:13px}
+.dm-table th,.dm-table td{padding:6px 10px;border-bottom:1px solid var(--cbi-border,#e0e0e0);text-align:left;white-space:nowrap}
+.dm-table th{background:var(--cbi-bg,#f5f5f5);font-weight:600}
+.dm-on{color:#22c55e}.dm-off{color:#9ca3af}.dm-blocked{color:#ef4444;font-weight:600}
+.dm-mac{font-family:monospace;font-size:11px;color:#666}
+.dm-speed{font-variant-numeric:tabular-nums}
+.dm-btn{padding:3px 8px;border-radius:3px;border:none;cursor:pointer;font-size:11px;margin:1px}
+.dm-btn-block{background:#ef4444;color:#fff}
+.dm-btn-unblock{background:#22c55e;color:#fff}
+.dm-btn-rename{background:#6366f1;color:#fff}
+.dm-empty{text-align:center;padding:32px;color:#9ca3af}
+</style>
+<div class="dm-wrap">
+<h2><%:Device Manager%></h2>
+<div id="dm-content"><p class="dm-empty"><%:Loading...%></p></div>
+</div>
+<script>
+function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+function fmtSpeed(bps){if(!bps)return'0 bps';if(bps>=1e6)return(bps/1e6).toFixed(1)+' Mbps';if(bps>=1e3)return(bps/1e3).toFixed(1)+' Kbps';return bps+' bps'}
+function load(){
+ fetch('/cgi-bin/luci/admin/network/devman/api_devices').then(r=>r.json()).then(function(d){
+  var c=document.getElementById('dm-content');
+  if(!d||!d.length){c.innerHTML='<p class="dm-empty"><%:No devices detected yet. Connect a device to see it here.%></p>';return}
+  var h='<table class="dm-table"><thead><tr><th><%:Name%></th><th>IPv4</th><th>IPv6</th><th>MAC</th><th><%:State%></th><th><%:Speed%></th><th><%:Blocked%></th><th><%:Actions%></th></tr></thead><tbody>';
+  d.forEach(function(dev){
+   var name=dev.alias||dev.hostname||'Device#'+dev.id;
+   var st=dev.online?'<span class="dm-on">● <%:Online%></span>':'<span class="dm-off">○ <%:Offline%></span>';
+   var bl=dev.is_blocked?'<span class="dm-blocked">■</span>':'';
+   var sp=fmtSpeed(dev.speed_out||0);
+   h+='<tr>';
+   h+='<td><b>'+esc(name)+'</b></td>';
+   h+='<td>'+esc(dev.current_ip||'-')+'</td>';
+   h+='<td style="font-size:11px;color:#666">'+(dev.current_ip6||'').slice(0,18)+'...</td>';
+   h+='<td class="dm-mac">'+esc(dev.current_mac||'-')+'</td>';
+   h+='<td>'+st+'</td>';
+   h+='<td class="dm-speed">'+sp+'</td>';
+   h+='<td>'+bl+'</td>';
+   h+='<td>';
+   h+=dev.is_blocked?'<button class="dm-btn dm-btn-unblock" onclick="tb('+dev.id+',0)"><%:Unblock%></button>':'<button class="dm-btn dm-btn-block" onclick="tb('+dev.id+',1)"><%:Block%></button>';
+   h+=' <button class="dm-btn dm-btn-rename" onclick="rn('+dev.id+',\''+esc(name)+'\')"><%:Rename%></button>';
+   h+='</td></tr>';
+  });
+  h+='</tbody></table>';
+  c.innerHTML=h;
+ });
+}
+function tb(id,b){fetch('/cgi-bin/luci/admin/network/devman/api_block?device_id='+id+'&block='+b).then(load)}
+function rn(id,n){var p=prompt('<%:New name:%>',n);if(p&&p!==n)fetch('/cgi-bin/luci/admin/network/devman/api_limit?device_id='+id+'&rate_limit=-1&alias='+encodeURIComponent(p)).then(load)}
+load();setInterval(load,5000);
+</script>
+<%+footer%>
