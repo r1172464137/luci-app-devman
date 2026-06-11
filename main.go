@@ -175,10 +175,16 @@ curl -s -X POST http://127.0.0.1:9999/api/dhcp-event -H "Content-Type: applicati
 	for name, content := range scripts {
 		os.WriteFile(scriptDir+"/"+name, []byte(content), 0755)
 	}
-	// Ensure dnsmasq hook via /etc/dnsmasq.d/ (survives UCI regeneration)
-	hook := scriptDir + "/dhcp-hook.sh"
-	os.MkdirAll("/etc/dnsmasq.d", 0755)
-	os.WriteFile("/etc/dnsmasq.d/devman.conf", []byte("dhcp-script="+hook+"\n"), 0644)
+	// Install dnsmasq hook at default path
+	os.WriteFile("/usr/lib/dnsmasq/dhcp-script.sh", []byte(`#!/bin/sh
+[ "$1" = "add" ] || [ "$1" = "old" ] || exit 0
+curl -s -X POST http://127.0.0.1:9999/api/dhcp-event -H "Content-Type: application/json" \
+  -d "{\"mac\":\"$2\",\"ip\":\"$3\",\"hostname\":\"${DNSMASQ_SUPPLIED_HOSTNAME:-}\",\"vendor_class\":\"${DNSMASQ_VENDOR_CLASS:-}\",\"opt55\":\"${DNSMASQ_REQUESTED_OPTIONS:-}\"}" &
+`), 0755)
+	// Set via UCI to survive regenerations
+	exec.Command("uci", "set", "dhcp.@dnsmasq[0].dhcpscript=/usr/lib/dnsmasq/dhcp-script.sh").Run()
+	exec.Command("uci", "commit", "dhcp").Run()
+	exec.Command("/etc/init.d/dnsmasq", "restart").Run()
 }
 
 func initTC()  { exec.Command(scriptDir+"/limit.sh", "init").Run() }
