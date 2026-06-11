@@ -82,6 +82,8 @@ func main() {
 	installScripts()
 	initTC()
 	initNFT()
+	// Immediately fill hostnames from existing leases
+	fillHostnamesFromLeases()
 
 	go neightLoop()
 	go conntrackLoop()
@@ -192,6 +194,16 @@ curl -s -X POST http://127.0.0.1:9999/api/dhcp-event -H "Content-Type: applicati
 
 func initTC()  { exec.Command(scriptDir+"/limit.sh", "init").Run() }
 func initNFT() { exec.Command(scriptDir+"/block.sh", "init").Run() }
+
+func fillHostnamesFromLeases() {
+	out, _ := os.ReadFile("/etc/dhcp.leases")
+	for _, line := range strings.Split(string(out), "\n") {
+		f := strings.Fields(line)
+		if len(f) >= 4 && isLAN(f[2]) && f[3] != "" && f[3] != "*" {
+			db.Exec("UPDATE devices SET hostname=? WHERE ipv4=? AND hostname=''", f[3], f[2])
+		}
+	}
+}
 
 // ======== discovery ========
 
@@ -375,9 +387,13 @@ func useRawSocket() {
 		log.Printf("DHCP %s: mac=%s ip=%s host=%s vendor=%s opt55=%s",
 			msgType, mac, ip, hostname, vendorClass, opt55hex[:min(8, len(opt55hex))])
 
-		if ip != "" && isLAN(ip) {
+		if mac != "" && isLAN(ip) {
 			// Fingerprint device by MAC+hostname+(vendor+opt55)
 			upsertDevice(ip, mac, hostname, vendorClass, opt55hex)
+			// Also update ipv4 on any device with this MAC
+			mu.Lock()
+			db.Exec("UPDATE devices SET ipv4=? WHERE mac=? AND ipv4!=?", ip, mac, ip)
+			mu.Unlock()
 		}
 	}
 }
@@ -950,10 +966,11 @@ func mergeDuplicateHostnames() {
 		db.Exec("UPDATE device_macs SET device_id=? WHERE device_id=?", keepID, rmID)
 		// Update keep with rm's IP and MAC if keep doesn't have them
 		db.Exec("UPDATE devices SET ipv4=CASE WHEN ipv4='' THEN ? ELSE ipv4 END WHERE id=?", ip2, keepID)
+		now := time.Now().Unix()
 		if isRandomMAC(mac2) && !isRandomMAC(mac1) {
-			db.Exec("INSERT OR IGNORE INTO device_macs (device_id,mac,first_seen,last_seen) VALUES (?,'?',?,?)", keepID, mac2, time.Now().Unix(), time.Now().Unix())
+			db.Exec("INSERT OR IGNORE INTO device_macs (device_id,mac,first_seen,last_seen) VALUES (?,?,?,?)", keepID, mac2, now, now)
 		} else if isRandomMAC(mac1) && !isRandomMAC(mac2) {
-			db.Exec("INSERT OR IGNORE INTO device_macs (device_id,mac,first_seen,last_seen) VALUES (?,?,?,?)", keepID, mac1, time.Now().Unix(), time.Now().Unix())
+			db.Exec("INSERT OR IGNORE INTO device_macs (device_id,mac,first_seen,last_seen) VALUES (?,?,?,?)", keepID, mac1, now, now)
 		}
 		db.Exec("DELETE FROM devices WHERE id=?", rmID)
 		log.Printf("Fingerprint-merged %s: %d → %d", hostname, rmID, keepID)
