@@ -9,7 +9,7 @@ start_service() {
 	procd_set_param command "$PROG"
 	procd_set_param env WAN_IF="$(uci get network.wan.device 2>/dev/null || echo eth0)"
 	procd_set_param env LAN_IF="br-lan"
-	procd_set_param env DB_PATH="/var/lib/devman.db"
+	procd_set_param env DB_PATH="/etc/devman/devman.db"
 	procd_set_param stdout 1
 	procd_set_param stderr 1
 	procd_set_param respawn
