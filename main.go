@@ -713,7 +713,8 @@ func speedLoop() {
 	for {
 		time.Sleep(3 * time.Second)
 		now := time.Now().Unix()
-		out, _ := exec.Command("conntrack", "-L").Output()
+		log.Printf("SPEED: tick")
+		out, _ := exec.Command("/usr/sbin/conntrack", "-L").Output()
 		curUp := map[string]uint64{}
 		curDown := map[string]uint64{}
 
@@ -740,23 +741,39 @@ func speedLoop() {
 			}
 		}
 
+		// Debug: print first conntrack line with bytes
+		for _, line := range strings.Split(string(out), "\n") {
+			if strings.Contains(line, "src=") && strings.Contains(line, "bytes=") {
+				fb := strings.Index(line, "bytes=")
+				lb := strings.LastIndex(line, "bytes=")
+				log.Printf("CONNTRACK: fb=%d lb=%d len=%d line=%s", fb, lb, len(line), line[:80])
+				break
+			}
+		}
 		mu.Lock()
-		for ip, total := range curUp {
+		allIPs := map[string]bool{}
+		for ip := range curUp {
+			allIPs[ip] = true
+		}
+		for ip := range curDown {
+			allIPs[ip] = true
+		}
+		for ip := range allIPs {
 			if !first[ip] {
-				prevUp[ip] = total
+				prevUp[ip] = curUp[ip]
 				prevDown[ip] = curDown[ip]
 				first[ip] = true
 				continue
 			}
-			upDelta := total - prevUp[ip]
+			upDelta := curUp[ip] - prevUp[ip]
 			downDelta := curDown[ip] - prevDown[ip]
-			prevUp[ip] = total
+			prevUp[ip] = curUp[ip]
 			prevDown[ip] = curDown[ip]
-			if speed := uint64(float64(upDelta) / 3.0 * 8); speed > 0 {
-				db.Exec("INSERT INTO traffic (device_id,speed_in,recorded_at) SELECT id,?,? FROM devices WHERE ipv4=?", speed, now, ip)
+			if s := uint64(float64(upDelta) / 3.0 * 8); s > 0 {
+				db.Exec("INSERT INTO traffic (device_id,speed_in,recorded_at) SELECT id,?,? FROM devices WHERE ipv4=?", s, now, ip)
 			}
-			if speed := uint64(float64(downDelta) / 3.0 * 8); speed > 0 {
-				db.Exec("INSERT INTO traffic (device_id,speed_out,recorded_at) SELECT id,?,? FROM devices WHERE ipv4=?", speed, now, ip)
+			if s := uint64(float64(downDelta) / 3.0 * 8); s > 0 {
+				db.Exec("INSERT INTO traffic (device_id,speed_out,recorded_at) SELECT id,?,? FROM devices WHERE ipv4=?", s, now, ip)
 			}
 		}
 		mu.Unlock()
