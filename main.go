@@ -41,9 +41,6 @@ type DeviceProfile struct {
 var (
 	db        *sql.DB
 	mu        sync.RWMutex
-	prevBytes = map[string]uint64{}
-	firstSeen = map[string]bool{}
-	speedMu   sync.Mutex
 	scriptDir = "/usr/lib/devman"
 )
 
@@ -90,7 +87,6 @@ func main() {
 	go conntrackLoop()
 	go leaseLoop()
 	go dhcpSniffLoop()
-	go speedLoop()
 	go reconcileLoop()
 
 	http.HandleFunc("/api/devices", apiDevices)
@@ -701,63 +697,68 @@ func detectType(hostname, vendorClass string) string {
 
 // ======== speed via nftables counters ========
 
-var nftPrevUp = map[string]uint64{}
-var nftPrevDown = map[string]uint64{}
-var nftFirst = map[string]bool{}
 
-func speedLoop() {
-	log.Printf("SPEED: started")
-	var prevTx, prevRx = map[string]uint64{}, map[string]uint64{}
-	var firstDone = map[string]bool{}
 
-	for {
-		time.Sleep(3 * time.Second)
-		now := time.Now().Unix()
+var spPrevUp = map[string]uint64{}
+var spPrevDown = map[string]uint64{}
+var spFirst = map[string]bool{}
+var spLastTime time.Time
 
-		out, _ := exec.Command("sh", "-c", "cat /proc/net/dev | grep br-lan | awk '{print $2,$10}'").Output()
-		f := strings.Fields(string(out))
-		tx, rx := uint64(0), uint64(0)
-		if len(f) >= 2 {
-			tx, _ = atoui(f[1])
-			rx, _ = atoui(f[0])
+func calcSpeed() {
+	now := time.Now().Unix()
+	out, _ := exec.Command("/usr/sbin/conntrack", "-L").Output()
+	curUp := map[string]uint64{}
+	curDown := map[string]uint64{}
+	for _, line := range strings.Split(string(out), "\n") {
+		sIdx := strings.Index(line, " src=")
+		if sIdx < 0 { continue }
+		src := strings.SplitN(line[sIdx+5:], " ", 2)[0]
+		if !isLAN(src) || src == "127.0.0.1" { continue }
+		fb := strings.Index(line, "bytes=")
+		lb := strings.LastIndex(line, "bytes=")
+		if fb < 0 { continue }
+		up, _ := atoui(strings.SplitN(line[fb+6:], " ", 2)[0])
+		curUp[src] += up
+		if lb > fb {
+			dn, _ := atoui(strings.SplitN(line[lb+6:], " ", 2)[0])
+			curDown[src] += dn
 		}
+	}
 
-		mu.Lock()
-		rows, _ := db.Query("SELECT ipv4 FROM devices WHERE ipv4!=''")
-		var ips []string
-		if rows != nil {
-			for rows.Next() {
-				var ip string
-				rows.Scan(&ip)
-				ips = append(ips, ip)
-			}
-			rows.Close()
-		}
-		n := uint64(len(ips))
-		if n < 1 {
-			mu.Unlock()
+	// If first call, just store baseline and return
+	if spLastTime.IsZero() {
+		for ip := range curUp { spPrevUp[ip] = curUp[ip] }
+		for ip := range curDown { spPrevDown[ip] = curDown[ip] }
+		spLastTime = time.Now()
+		return
+	}
+
+	interval := float64(time.Since(spLastTime).Seconds())
+	if interval < 1 {
+		interval = 3
+	}
+	spLastTime = time.Now()
+
+	mu.Lock()
+	allIPs := map[string]bool{}
+	for ip := range curUp { allIPs[ip] = true }
+	for ip := range curDown { allIPs[ip] = true }
+	for ip := range allIPs {
+		if !spFirst[ip] {
+			spFirst[ip] = true
+			spPrevUp[ip] = curUp[ip]
+			spPrevDown[ip] = curDown[ip]
 			continue
 		}
-		perTx, perRx := tx/n, rx/n
-		log.Printf("SPEED: rx=%d tx=%d n=%d perRx=%d perTx=%d", rx, tx, n, perRx, perTx)
-
-		for _, ip := range ips {
-			if !firstDone[ip] {
-				firstDone[ip] = true
-				prevTx[ip] = perTx
-				prevRx[ip] = perRx
-				continue
-			}
-			up := uint64(float64(perTx-prevTx[ip]) / 3.0 * 8)
-				dn := uint64(float64(perRx-prevRx[ip]) / 3.0 * 8)
-				prevTx[ip] = perTx
-				prevRx[ip] = perRx
-				if up > 0 || dn > 0 {
-					db.Exec("INSERT INTO traffic (device_id,speed_in,speed_out,recorded_at) SELECT id,?,?,? FROM devices WHERE ipv4=?", up, dn, now, ip)
-				}
-			}
-		mu.Unlock()
+		up := uint64(float64(curUp[ip]-spPrevUp[ip]) / interval * 8)
+		dn := uint64(float64(curDown[ip]-spPrevDown[ip]) / interval * 8)
+		spPrevUp[ip] = curUp[ip]
+		spPrevDown[ip] = curDown[ip]
+		if up > 0 || dn > 0 {
+			db.Exec("INSERT INTO traffic (device_id,speed_in,speed_out,recorded_at) SELECT id,?,?,? FROM devices WHERE ipv4=? AND ipv4!=''", up, dn, now, ip)
+		}
 	}
+	mu.Unlock()
 }
 
 // ======== rules reconcile ========
@@ -810,6 +811,7 @@ func reconcileLoop() {
 // ======== API ========
 
 func apiDevices(w http.ResponseWriter, r *http.Request) {
+	calcSpeed()
 	mu.RLock()
 	defer mu.RUnlock()
 	rows, _ := db.Query(`SELECT d.id, d.alias, d.hostname, d.device_type, d.ipv4, d.mac, d.vendor_class, d.opt55_hash, d.is_blocked, d.rate_limit, d.last_seen,
