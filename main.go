@@ -236,16 +236,31 @@ func conntrackLoop() {
 }
 
 func leaseLoop() {
+	var lastMod time.Time
 	for {
-		// Read dnsmasq lease file: expiry MAC IP HOSTNAME client_id
-		out, _ := exec.Command("cat", "/etc/dhcp.leases").Output()
+		time.Sleep(3 * time.Second)
+		info, err := os.Stat("/etc/dhcp.leases")
+		if err != nil || info.ModTime().Equal(lastMod) {
+			continue
+		}
+		lastMod = info.ModTime()
+
+		out, _ := os.ReadFile("/etc/dhcp.leases")
 		mu.Lock()
 		for _, line := range strings.Split(string(out), "\n") {
 			f := strings.Fields(line)
 			if len(f) >= 4 && isLAN(f[2]) && f[3] != "" && f[3] != "*" {
 				hostname := f[3]
 				ip := f[2]
+				mac := f[1]
+				now := info.ModTime().Unix()
+
 				// Set hostname on matching device
+				db.Exec("UPDATE devices SET hostname=CASE WHEN hostname='' THEN ? ELSE hostname END WHERE ipv4=?", hostname, ip)
+				// Also record MAC (for future fingerprint matching)
+				db.Exec("UPDATE devices SET mac=CASE WHEN mac='' THEN ? ELSE mac END WHERE ipv4=?", mac, ip)
+				db.Exec("INSERT OR IGNORE INTO device_macs (device_id,mac,first_seen,last_seen) SELECT id,?,?,? FROM devices WHERE ipv4=?", mac, now, now, ip)
+
 				r, _ := db.Exec("UPDATE devices SET hostname=? WHERE ipv4=? AND hostname=''", hostname, ip)
 				rows, _ := r.RowsAffected()
 				if rows > 0 {
@@ -254,7 +269,6 @@ func leaseLoop() {
 			}
 		}
 		mu.Unlock()
-		time.Sleep(10 * time.Second)
 	}
 }
 
