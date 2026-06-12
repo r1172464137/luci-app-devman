@@ -77,7 +77,7 @@ function load(){
    h+='<td>';
    h+=dev.is_blocked?'<button class="dm-btn dm-btn-unblock" onclick="tb('+dev.id+',0)">Unblock</button>':'<button class="dm-btn dm-btn-block" onclick="tb('+dev.id+',1)">Block</button>';
    h+=' <button class="dm-btn dm-btn-rename" onclick="rn('+dev.id+',\''+esc(name)+'\')">Rename</button>';
-   h+=' <button class="dm-btn dm-btn-limit" onclick="sl('+dev.id+','+(dev.rate_limit||0)+')">Limit</button>';
+   h+=' <button class="dm-btn dm-btn-limit" onclick="sl('+dev.id+','+(dev.rate_limit||0)+','+(dev.rate_limit_down||0)+')">Limit</button>';
    h+='</td></tr>';
   });
   h+='</tbody></table>';
@@ -85,12 +85,13 @@ function load(){
  });
 }
 function tb(id,b){fetch('/cgi-bin/luci/admin/network/devman/api_block?device_id='+id+'&block='+b).then(load)}
-function showLimitModal(id,rateLimit){
+function showLimitModal(id,rateUp,rateDn){
  var m=document.createElement('div');m.className='dm-modal';
- var upVal=rateLimit||0,dnVal=0;
- var unit=kbpsToUnit(upVal);
- var upShow=unit?upVal/unit[1]:0;
- m.innerHTML='<div class="dm-modal-box"><h3>Bandwidth Limit</h3><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><label style="flex:1">Upload</label><input id="dm-up" type="number" min="0" step="0.1" value="'+upShow.toFixed(1)+'" style="flex:1"><select id="dm-up-unit" style="width:80px"><option value="1000000000">Gbps</option><option value="1000000" selected>Mbps</option><option value="1000">Kbps</option></select></div><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><label style="flex:1">Download</label><input id="dm-dn" type="number" min="0" step="0.1" value="0" style="flex:1"><select id="dm-dn-unit" style="width:80px"><option value="1000000000">Gbps</option><option value="1000000" selected>Mbps</option><option value="1000">Kbps</option></select></div><div class="dm-modal-btns"><button class="dm-btn-cancel" onclick="this.closest(\'.dm-modal\').remove()">Cancel</button><button class="dm-btn-save">Apply</button></div></div>';
+ var upVal=rateUp||0,dnVal=rateDn||0;
+ var upUnit=kbpsToUnit(upVal),dnUnit=kbpsToUnit(dnVal);
+ var upShow=upUnit?upVal/upUnit[1]:0;
+ var dnShow=dnUnit?dnVal/dnUnit[1]:0;
+ m.innerHTML='<div class="dm-modal-box"><h3>Bandwidth Limit</h3><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><label style="flex:1">Upload</label><input id="dm-up" type="number" min="0" step="0.1" value="'+upShow.toFixed(1)+'" style="flex:1"><select id="dm-up-unit" style="width:80px"><option value="1000000000">Gbps</option><option value="1000000" selected>Mbps</option><option value="1000">Kbps</option></select></div><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><label style="flex:1">Download</label><input id="dm-dn" type="number" min="0" step="0.1" value="'+dnShow.toFixed(1)+'" style="flex:1"><select id="dm-dn-unit" style="width:80px"><option value="1000000000">Gbps</option><option value="1000000" selected>Mbps</option><option value="1000">Kbps</option></select></div><div class="dm-modal-btns"><button class="dm-btn-cancel" onclick="this.closest(\'.dm-modal\').remove()">Cancel</button><button class="dm-btn-save">Apply</button></div></div>';
  document.body.appendChild(m);
  m.querySelector('.dm-btn-save').onclick=function(){
   var up=Math.round(parseFloat(m.querySelector('#dm-up').value)*parseInt(m.querySelector('#dm-up-unit').value))||0;
@@ -115,7 +116,7 @@ function rn(id,n){
  m.querySelector('#dm-rn').focus();
  m.querySelector('#dm-rn').onkeydown=function(e){if(e.key==='Enter')m.querySelector('.dm-btn-save').click()};
 }
-function sl(id,cur){showLimitModal(id,cur)}
+function sl(id,curUp,curDn){showLimitModal(id,curUp,curDn)}
 load();setInterval(load,5000);
 </script>
 <%+footer%>
