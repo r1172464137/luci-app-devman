@@ -32,7 +32,7 @@ function api_limit()
 	local http = require "luci.http"
 	local dev = http.formvalue("device_id")
 	local limit = http.formvalue("rate_limit") or "0"
-	local limit_dn = http.formvalue("rate_limit_down") or "0"
+	local limit_dn = http.formvalue("rate_limit_down") or "-1"
 	local alias = http.formvalue("alias")
 	if dev then
 		local body = '{"device_id":'..dev..',"rate_limit":'..limit..',"rate_limit_down":'..limit_dn

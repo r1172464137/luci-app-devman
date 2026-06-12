@@ -72,6 +72,19 @@ func nftInit() {
 func nftBlock(ip string)   { exec.Command("nft", "add", "element", "ip", "devman", "blocked_ip", "{", ip, "}").Run() }
 func nftUnblock(ip string) { exec.Command("nft", "delete", "element", "ip", "devman", "blocked_ip", "{", ip, "}").Run() }
 
+func restoreRateLimits() {
+	rows, _ := db.Query("SELECT DISTINCT ipv4, COALESCE(rate_limit,0), COALESCE(rate_limit_dn,0) FROM devices WHERE ipv4!='' AND (rate_limit>0 OR rate_limit_dn>0)")
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var ip string
+			var ul, dl int
+			rows.Scan(&ip, &ul, &dl)
+			nftSetLimit(ip, ul, dl)
+		}
+	}
+}
+
 func nftSetLimit(ip string, ulBps, dlBps int) {
 	// Upload: mark via nft, shape via IFB HTB
 	exec.Command("nft", "delete", "element", "ip", "devman", "ul_mark", "{", ip, "}").Run()
@@ -156,6 +169,7 @@ func main() {
 	mergeDuplicateHostnames()
 
 	nftInit()
+	restoreRateLimits()
 	installDnsmasqHook()
 	db.Exec("UPDATE devices SET device_type='Unknown' WHERE device_type='' OR device_type IS NULL")
 	// Immediately fill hostnames from existing leases
@@ -821,19 +835,6 @@ func reconcileLoop() {
 			}
 			unblocked.Close()
 		}
-		log.Printf("RECONCILE: running")
-		// 3. Rate limits
-		rows, _ := db.Query("SELECT id, ipv4, is_blocked, COALESCE(rate_limit,0), COALESCE(rate_limit_dn,0) FROM devices WHERE ipv4!=''")
-		if rows != nil {
-			for rows.Next() {
-				var id int64
-				var ip string
-				var b, r, rd int
-				rows.Scan(&id, &ip, &b, &r, &rd)
-				nftSetLimit(ip, r, rd)
-			}
-			rows.Close()
-		}
 		mu.Unlock()
 	}
 }
@@ -906,10 +907,11 @@ func apiLimit(w http.ResponseWriter, r *http.Request) {
 	if req.Alias != "" {
 		db.Exec("UPDATE devices SET alias=? WHERE id=?", req.Alias, req.DeviceID)
 	}
-	if req.RateLimit >= 0 {
+	// rate_limit and rate_limit_dn default to -1 (sentinel = no change)
+	if req.RateLimit != -1 {
 		db.Exec("UPDATE devices SET rate_limit=? WHERE id=?", req.RateLimit, req.DeviceID)
 	}
-	if req.RateLimitDn >= 0 {
+	if req.RateLimitDn != -1 {
 		db.Exec("UPDATE devices SET rate_limit_dn=? WHERE id=?", req.RateLimitDn, req.DeviceID)
 	}
 	// Apply immediately via nft
