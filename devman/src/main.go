@@ -875,7 +875,7 @@ func apiDevices(w http.ResponseWriter, r *http.Request) {
 	rows, _ := db.Query(`SELECT d.id, d.alias, d.hostname, d.device_type, d.ipv4, d.mac, d.vendor_class, d.opt55_hash, d.is_blocked, d.rate_limit, COALESCE(d.rate_limit_dn,0), d.last_seen,
 		CASE WHEN d.last_seen > ? THEN 'green' WHEN d.last_seen > ? THEN 'yellow' ELSE 'gray' END,
 		(SELECT COUNT(DISTINCT mac) FROM device_macs WHERE device_id=d.id)
-		FROM devices d ORDER BY d.ipv4 ASC`, time.Now().Unix()-120, time.Now().Unix()-1800)
+		FROM devices d WHERE d.ipv4!='' ORDER BY d.ipv4 ASC`, time.Now().Unix()-120, time.Now().Unix()-1800)
 	w.Header().Set("Content-Type", "application/json")
 	if rows == nil {
 		w.Write([]byte("[]"))

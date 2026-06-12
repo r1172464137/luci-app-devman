@@ -64,7 +64,7 @@ function load(){
   if(!d||!d.length){c.innerHTML='<p class="dm-empty">No devices detected yet</p>';return}
   var h='<table class="dm-table"><thead><tr><th>Name</th><th>Type</th><th>IP</th><th>MAC</th><th>Status</th><th>Speed</th><th>Block</th><th>Actions</th></tr></thead><tbody>';
   d.forEach(function(dev){
-   var name=dev.alias||dev.hostname||('Device#'+dev.id);
+   var name=dev.alias||dev.hostname||'未命名设备';
    var tp='<span class="dm-type">'+esc(dev.device_type)+'</span>';
    h+='<tr>';
    h+='<td><b>'+esc(name)+'</b></td><td>'+tp+'</td>';
@@ -94,10 +94,16 @@ function showLimitModal(id,rateUp,rateDn){
  m.innerHTML='<div class="dm-modal-box"><h3>Bandwidth Limit</h3><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><label style="flex:1">Upload</label><input id="dm-up" type="number" min="0" step="0.1" value="'+upShow.toFixed(1)+'" style="flex:1"><select id="dm-up-unit" style="width:80px"><option value="1000000000">Gbps</option><option value="1000000" selected>Mbps</option><option value="1000">Kbps</option></select></div><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><label style="flex:1">Download</label><input id="dm-dn" type="number" min="0" step="0.1" value="'+dnShow.toFixed(1)+'" style="flex:1"><select id="dm-dn-unit" style="width:80px"><option value="1000000000">Gbps</option><option value="1000000" selected>Mbps</option><option value="1000">Kbps</option></select></div><div class="dm-modal-btns"><button class="dm-btn-cancel" onclick="this.closest(\'.dm-modal\').remove()">Cancel</button><button class="dm-btn-save">Apply</button></div></div>';
  document.body.appendChild(m);
  m.querySelector('.dm-btn-save').onclick=function(){
-  var up=Math.round(parseFloat(m.querySelector('#dm-up').value)*parseInt(m.querySelector('#dm-up-unit').value))||0;
-  var dn=Math.round(parseFloat(m.querySelector('#dm-dn').value)*parseInt(m.querySelector('#dm-dn-unit').value))||0;
+  var rawUp=parseFloat(m.querySelector('#dm-up').value);
+  var rawDn=parseFloat(m.querySelector('#dm-dn').value);
+  var up=Math.round(rawUp*parseInt(m.querySelector('#dm-up-unit').value))||0;
+  var dn=Math.round(rawDn*parseInt(m.querySelector('#dm-dn-unit').value))||0;
   m.remove();
-  fetch('/cgi-bin/luci/admin/network/devman/api_limit?device_id='+id+'&rate_limit='+up+'&rate_limit_down='+dn).then(load);
+  var url='/cgi-bin/luci/admin/network/devman/api_limit?device_id='+id;
+  url+='&rate_limit='+up;
+  // Only send download if user changed it (raw > 0 means they set a value, raw == 0 means they cleared)
+  url+='&rate_limit_down='+dn;
+  fetch(url).then(load);
  };
  m.querySelector('#dm-up').focus();
  m.querySelector('#dm-up').onkeydown=function(e){if(e.key==='Enter')m.querySelector('#dm-dn').focus()};
