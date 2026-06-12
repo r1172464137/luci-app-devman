@@ -108,7 +108,7 @@ func tcSetDownload(cid int64, ip string, kbps int) {
 	exec.Command("tc", "filter", "add", "dev", lanIface, "parent", "1:", "prio", prio,
 		"u32", "match", "ip", "dst", ip, "match", "ip", "src", lanSubnet, "action", "pass").Run()
 	exec.Command("tc", "filter", "add", "dev", lanIface, "parent", "1:", "prio", wprio,
-		"u32", "match", "ip", "dst", ip, "action", "mirred", "egress", "redirect", "dev", "ifb0").Run()
+		"u32", "match", "ip", "dst", ip, "action", "mirred", "ingress", "redirect", "dev", "ifb0").Run()
 	// ifb0 ingress: police with drop
 	exec.Command("tc", "filter", "del", "dev", "ifb0", "parent", "ffff:", "prio", prio).Run()
 	exec.Command("tc", "filter", "del", "dev", "ifb0", "parent", "ffff:", "prio", wprio).Run()
