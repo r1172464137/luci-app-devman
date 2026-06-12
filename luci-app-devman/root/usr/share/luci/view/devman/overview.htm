@@ -4,7 +4,7 @@
 .dm-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:12px}
 .dm-card{background:#fff;border-radius:10px;padding:16px;box-shadow:0 1px 4px rgba(0,0,0,.08);border:1px solid #e8e8e8;position:relative;transition:box-shadow .2s}
 .dm-card:hover{box-shadow:0 2px 12px rgba(0,0,0,.12)}
-.dm-card-top{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.dm-card-top{display:flex;align-items:center;gap:6px;margin-bottom:10px;flex-wrap:nowrap;overflow:hidden}
 .dm-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
 .dm-dot-green{background:#22c55e;box-shadow:0 0 6px rgba(34,197,94,.4)}
 .dm-dot-yellow{background:#f59e0b;box-shadow:0 0 6px rgba(245,158,11,.4)}
@@ -59,9 +59,13 @@ html[data-darkmode=true] .dm-btn-cancel{background:#444;color:#ccc}
 function esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
 function fmtSpeed(bps){if(!bps||bps>1e12)return'0';if(bps>=1e9)return(bps/1e9).toFixed(2)+' Gbps';if(bps>=1e6)return(bps/1e6).toFixed(1)+' Mbps';if(bps>=1e3)return(bps/1e3).toFixed(0)+' Kbps';return bps+' bps'}
 function vendorIcon(t){
- var m={'Android':'🤖','iOS':'🍎','Windows':'🪟','Linux':'🐧','macOS':'🍎',
-  'Apple':'🍎','Samsung':'📱','Huawei':'📱','Xiaomi':'📱','IoT':'🔌','Mobile':'📱','Printer':'🖨️','TV':'📺'};
- return m[t]||'❓';
+ var m={'Xiaomi':'#ff6900','Samsung':'#3c6cfa','Apple':'#555','Huawei':'#cf0a2c',
+  'OnePlus':'#eb0028','Google':'#4285f4','Windows':'#0078d4','Linux':'#f5a623',
+  'Android':'#3ddc84','iOS':'#999','IoT':'#888','Mobile':'#888'};
+ if(t==='Unknown'||!t)return'';
+ var c=m[t]||'#aaa',n=t;
+ if(n.length>8)n=n.substring(0,7)+'…';
+ return '<span style="color:'+c+';font-weight:700;font-size:12px;flex-shrink:0">'+esc(n)+'</span>';
 }
 function dot(s){
  if(s==='green')return'<div class="dm-dot dm-dot-green" title="Online"></div>';
@@ -79,8 +83,8 @@ function load(){
    h+='<div class="dm-card">';
    if(dev.is_blocked)h+='<div class="dm-blocked-badge">BLOCKED</div>';
    else if(limited)h+='<div class="dm-limited-badge">LIMITED</div>';
-   h+='<div class="dm-card-top">'+dot(dev.online)+'<span class="dm-name" title="'+esc(name)+'">'+esc(name)+'</span>';
-   h+='<span class="dm-type-tag" title="'+esc(dev.device_type)+'">'+vendorIcon(dev.device_type)+' '+esc(dev.device_type)+'</span></div>';
+   h+='<div class="dm-card-top">'+vendorIcon(dev.device_type)+dot(dev.online)+'<span class="dm-name" title="'+esc(name)+'">'+esc(name)+'</span>';
+   h+='</div>';
    h+='<div class="dm-speeds"><div class="dm-up">↑ '+fmtSpeed(dev.speed_in||0)+'</div><div class="dm-dn">↓ '+fmtSpeed(dev.speed_out||0)+'</div></div>';
    h+='<div class="dm-detail">'+esc(dev.current_ip||'')+' · '+esc(dev.current_mac||'')+'</div>';
    h+='<div class="dm-actions">';
@@ -129,5 +133,6 @@ function rn(id,n){
 }
 function sl(id,curUp,curDn){showLimitModal(id,curUp,curDn)}
 load();setInterval(load,5000);
+document.querySelector('h2').textContent='Device Manager v6.7';
 </script>
 <%+footer%>
