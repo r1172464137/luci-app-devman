@@ -51,22 +51,11 @@ func nftInit() {
 	exec.Command("nft", "add", "set", "ip", "devman", "blocked_ip", "{", "type", "ipv4_addr", ";", "}").Run()
 	exec.Command("nft", "add", "chain", "ip", "devman", "forward", "{", "type", "filter", "hook", "forward", "priority", "filter", "-", "1", ";", "}").Run()
 	exec.Command("nft", "add", "rule", "ip", "devman", "forward", "ip", "saddr", "@blocked_ip", "drop").Run()
-	// Mark chain for rate limiting (eqosplus pattern)
+	// Mark sets (TC infra created lazily on first limit)
 	exec.Command("nft", "add", "set", "ip", "devman", "ul_mark", "{", "type", "ipv4_addr", ";", "}").Run()
 	exec.Command("nft", "add", "set", "ip", "devman", "dl_mark", "{", "type", "ipv4_addr", ";", "}").Run()
 	exec.Command("nft", "add", "rule", "ip", "devman", "forward", "ip", "saddr", "@ul_mark", "meta", "mark", "set", "0x80000000").Run()
 	exec.Command("nft", "add", "rule", "ip", "devman", "forward", "ip", "daddr", "@dl_mark", "meta", "mark", "set", "0x40000000").Run()
-	// TC infrastructure
-	exec.Command("modprobe", "sch_htb", "act_mirred", "ifb").Run()
-	exec.Command("ip", "link", "add", "dev", "ifb0", "type", "ifb").Run()
-	exec.Command("ip", "link", "set", "dev", "ifb0", "up").Run()
-	exec.Command("tc", "qdisc", "add", "dev", lanIface, "root", "handle", "1:", "htb", "default", "99").Run()
-	exec.Command("tc", "class", "add", "dev", lanIface, "parent", "1:", "classid", "1:99", "htb", "rate", "1000mbit", "ceil", "1000mbit").Run()
-	exec.Command("tc", "qdisc", "add", "dev", "ifb0", "root", "handle", "1:", "htb", "default", "99").Run()
-	exec.Command("tc", "class", "add", "dev", "ifb0", "parent", "1:", "classid", "1:99", "htb", "rate", "1000mbit", "ceil", "1000mbit").Run()
-	exec.Command("tc", "qdisc", "add", "dev", lanIface, "handle", "ffff:", "ingress").Run()
-	exec.Command("tc", "filter", "add", "dev", lanIface, "parent", "ffff:", "prio", "1",
-		"u32", "match", "u32", "0", "0", "action", "mirred", "egress", "redirect", "dev", "ifb0").Run()
 }
 
 func nftBlock(ip string)   { exec.Command("nft", "add", "element", "ip", "devman", "blocked_ip", "{", ip, "}").Run() }
@@ -85,7 +74,25 @@ func restoreRateLimits() {
 	}
 }
 
+var tcInited bool
+
+func tcLazyInit() {
+	if tcInited { return }
+	tcInited = true
+	exec.Command("modprobe", "sch_htb", "act_mirred", "ifb").Run()
+	exec.Command("ip", "link", "add", "dev", "ifb0", "type", "ifb").Run()
+	exec.Command("ip", "link", "set", "dev", "ifb0", "up").Run()
+	exec.Command("tc", "qdisc", "add", "dev", lanIface, "root", "handle", "1:", "htb", "default", "99").Run()
+	exec.Command("tc", "class", "add", "dev", lanIface, "parent", "1:", "classid", "1:99", "htb", "rate", "1000mbit", "ceil", "1000mbit").Run()
+	exec.Command("tc", "qdisc", "add", "dev", "ifb0", "root", "handle", "1:", "htb", "default", "99").Run()
+	exec.Command("tc", "class", "add", "dev", "ifb0", "parent", "1:", "classid", "1:99", "htb", "rate", "1000mbit", "ceil", "1000mbit").Run()
+	exec.Command("tc", "qdisc", "add", "dev", lanIface, "handle", "ffff:", "ingress").Run()
+	exec.Command("tc", "filter", "add", "dev", lanIface, "parent", "ffff:", "prio", "1",
+		"u32", "match", "u32", "0", "0", "action", "mirred", "egress", "redirect", "dev", "ifb0").Run()
+}
+
 func nftSetLimit(ip string, ulBps, dlBps int) {
+	tcLazyInit()
 	// Upload: mark via nft, shape via IFB HTB
 	exec.Command("nft", "delete", "element", "ip", "devman", "ul_mark", "{", ip, "}").Run()
 	if ulBps > 0 { exec.Command("nft", "add", "element", "ip", "devman", "ul_mark", "{", ip, "}").Run() }
