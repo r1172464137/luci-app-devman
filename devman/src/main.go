@@ -176,6 +176,12 @@ func main() {
 	}
 	defer db.Close()
 	initDB()
+	// Re-detect vendor from hostname for old "Android" devices
+	db.Exec("UPDATE devices SET device_type='Xiaomi' WHERE device_type='Android' AND (hostname LIKE '%xiaomi%' OR hostname LIKE '%redmi%')")
+	db.Exec("UPDATE devices SET device_type='Samsung' WHERE device_type='Android' AND (hostname LIKE '%samsung%' OR hostname LIKE '%sgt-%')")
+	db.Exec("UPDATE devices SET device_type='OnePlus' WHERE device_type='Android' AND hostname LIKE '%oneplus%'")
+	db.Exec("UPDATE devices SET device_type='Huawei' WHERE device_type='Android' AND (hostname LIKE '%huawei%' OR hostname LIKE '%honor%')")
+	db.Exec("UPDATE devices SET device_type='Google' WHERE device_type='Android' AND hostname LIKE '%pixel%'")
 	// Update existing device types from MAC OUI + hostname
 	rows, _ := db.Query("SELECT id, mac, hostname FROM devices WHERE device_type='Unknown' AND (mac!='' OR hostname!='')")
 	if rows != nil {
