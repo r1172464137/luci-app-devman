@@ -67,8 +67,15 @@ func nftBlock(ip string)   { exec.Command("nft", "add", "element", "ip", "devman
 func nftUnblock(ip string) { exec.Command("nft", "delete", "element", "ip", "devman", "blocked_ip", "{", ip, "}").Run() }
 
 func tcInit() {
+	// Ingress on br-lan for upload policing
 	exec.Command("tc", "qdisc", "add", "dev", lanIface, "handle", "ffff:", "ingress").Run()
+	// HTB root for egress filtering (download: LAN pass, WAN → IFB)
 	exec.Command("tc", "qdisc", "add", "dev", lanIface, "root", "handle", "1:", "htb", "default", "30").Run()
+	// IFB for download ingress policing
+	exec.Command("modprobe", "ifb").Run()
+	exec.Command("ip", "link", "add", "dev", "ifb0", "type", "ifb").Run()
+	exec.Command("ip", "link", "set", "dev", "ifb0", "up").Run()
+	exec.Command("tc", "qdisc", "add", "dev", "ifb0", "handle", "ffff:", "ingress").Run()
 }
 
 func tcSetUpload(cid int64, ip string, kbps int) {
@@ -93,28 +100,39 @@ func tcDelUpload(cid int64) {
 }
 
 func tcSetDownload(cid int64, ip string, kbps int) {
-	classid := fmt.Sprintf("1:1%d", cid)
-	exec.Command("tc", "class", "change", "dev", lanIface, "parent", "1:", "classid", classid,
-		"htb", "rate", fmt.Sprintf("%d", kbps)+"kbit", "ceil", fmt.Sprintf("%d", kbps)+"kbit", "burst", "1600", "cburst", "1600").Run()
-	if err := exec.Command("tc", "class", "change", "dev", lanIface, "parent", "1:", "classid", classid,
-		"htb", "rate", fmt.Sprintf("%d", kbps)+"kbit", "ceil", fmt.Sprintf("%d", kbps)+"kbit", "burst", "1600", "cburst", "1600").Run(); err != nil {
-		exec.Command("tc", "class", "add", "dev", lanIface, "parent", "1:", "classid", classid,
-			"htb", "rate", fmt.Sprintf("%d", kbps)+"kbit", "ceil", fmt.Sprintf("%d", kbps)+"kbit", "burst", "1600", "cburst", "1600").Run()
-	}
-	exec.Command("tc", "filter", "replace", "dev", lanIface, "parent", "1:", "prio", "1",
-		"u32", "match", "ip", "dst", ip, "flowid", classid).Run()
+	prio := fmt.Sprintf("%d", cid)
+	wprio := fmt.Sprintf("1%d", cid)
+	// br-lan egress (htb root parent 1:): LAN → pass, WAN → mirred to ifb0
+	exec.Command("tc", "filter", "del", "dev", lanIface, "parent", "1:", "prio", prio).Run()
+	exec.Command("tc", "filter", "del", "dev", lanIface, "parent", "1:", "prio", wprio).Run()
+	exec.Command("tc", "filter", "add", "dev", lanIface, "parent", "1:", "prio", prio,
+		"u32", "match", "ip", "dst", ip, "match", "ip", "src", lanSubnet, "action", "pass").Run()
+	exec.Command("tc", "filter", "add", "dev", lanIface, "parent", "1:", "prio", wprio,
+		"u32", "match", "ip", "dst", ip, "action", "mirred", "egress", "redirect", "dev", "ifb0").Run()
+	// ifb0 ingress: police with drop
+	exec.Command("tc", "filter", "del", "dev", "ifb0", "parent", "ffff:", "prio", prio).Run()
+	exec.Command("tc", "filter", "del", "dev", "ifb0", "parent", "ffff:", "prio", wprio).Run()
+	exec.Command("tc", "filter", "add", "dev", "ifb0", "parent", "ffff:", "prio", prio,
+		"u32", "match", "ip", "src", lanSubnet, "action", "pass").Run()
+	exec.Command("tc", "filter", "add", "dev", "ifb0", "parent", "ffff:", "prio", wprio,
+		"u32", "police", "rate", fmt.Sprintf("%d", kbps)+"kbit", "burst", "10k", "drop").Run()
 }
 
 func tcDelDownload(cid int64, ip string) {
-	classid := fmt.Sprintf("1:1%d", cid)
-	exec.Command("tc", "filter", "del", "dev", lanIface, "parent", "1:", "prio", "1",
-		"u32", "match", "ip", "dst", ip, "flowid", classid).Run()
-	exec.Command("tc", "class", "del", "dev", lanIface, "parent", "1:", "classid", classid).Run()
+	prio := fmt.Sprintf("%d", cid)
+	wprio := fmt.Sprintf("1%d", cid)
+	exec.Command("tc", "filter", "del", "dev", lanIface, "parent", "1:", "prio", prio).Run()
+	exec.Command("tc", "filter", "del", "dev", lanIface, "parent", "1:", "prio", wprio).Run()
+	exec.Command("tc", "filter", "del", "dev", "ifb0", "parent", "ffff:", "prio", prio).Run()
+	exec.Command("tc", "filter", "del", "dev", "ifb0", "parent", "ffff:", "prio", wprio).Run()
 }
 
 func tcClean() {
 	exec.Command("tc", "qdisc", "del", "dev", lanIface, "root").Run()
 	exec.Command("tc", "qdisc", "del", "dev", lanIface, "ingress").Run()
+	exec.Command("tc", "qdisc", "del", "dev", lanIface, "clsact").Run()
+	exec.Command("tc", "qdisc", "del", "dev", "ifb0", "ingress").Run()
+	exec.Command("ip", "link", "del", "dev", "ifb0").Run()
 }
 
 func main() {
