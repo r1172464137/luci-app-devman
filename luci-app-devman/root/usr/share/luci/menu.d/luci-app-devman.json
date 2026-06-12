@@ -1,7 +1,7 @@
 {
-	"admin/devman": {
+	"admin/network/devman": {
 		"title": "设备管理",
-		"order": 15,
+		"order": 5,
 		"action": {
 			"type": "view",
 			"path": "devman/overview"

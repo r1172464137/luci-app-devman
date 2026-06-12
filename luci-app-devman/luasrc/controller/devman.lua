@@ -1,11 +1,11 @@
 module("luci.controller.devman", package.seeall)
 
 function index()
-	page = entry({"admin", "devman"}, template("devman/overview"), _("设备管理"), 15)
+	page = entry({"admin", "network", "devman"}, template("devman/overview"), _("设备管理"), 5)
 	page.i18n = "devman"
-	entry({"admin", "devman", "api_devices"}, call("api_devices")).sysauth = false
-	entry({"admin", "devman", "api_block"}, call("api_block")).sysauth = false
-	entry({"admin", "devman", "api_limit"}, call("api_limit")).sysauth = false
+	entry({"admin", "network", "devman", "api_devices"}, call("api_devices")).sysauth = false
+	entry({"admin", "network", "devman", "api_block"}, call("api_block")).sysauth = false
+	entry({"admin", "network", "devman", "api_limit"}, call("api_limit")).sysauth = false
 end
 
 function api_devices()

@@ -81,7 +81,7 @@ function dot(s){
  return'<div class="dm-dot dm-dot-gray" title="Offline"></div>';
 }
 function load(){
- fetch('/cgi-bin/luci/admin/devman/api_devices').then(r=>r.json()).then(function(d){
+ fetch('/cgi-bin/luci/admin/network/devman/api_devices').then(r=>r.json()).then(function(d){
   var c=document.getElementById('dm-content');
   if(!d||!d.length){c.innerHTML='<p class="dm-empty">暂无设备</p>';return}
   var known=[],unknown=[];
@@ -117,7 +117,7 @@ function load(){
   c.innerHTML=h;
  });
 }
-function tb(id,b){fetch('/cgi-bin/luci/admin/devman/api_block?device_id='+id+'&block='+b).then(load)}
+function tb(id,b){fetch('/cgi-bin/luci/admin/network/devman/api_block?device_id='+id+'&block='+b).then(load)}
 function showLimitModal(id,rateUp,rateDn){
  var m=document.createElement('div');m.className='dm-modal';
  var upVal=rateUp||0,dnVal=rateDn||0;
@@ -130,7 +130,7 @@ function showLimitModal(id,rateUp,rateDn){
   var up=Math.round(parseFloat(m.querySelector('#dm-up').value)*parseInt(m.querySelector('#dm-up-unit').value))||0;
   var dn=Math.round(parseFloat(m.querySelector('#dm-dn').value)*parseInt(m.querySelector('#dm-dn-unit').value))||0;
   m.remove();
-  fetch('/cgi-bin/luci/admin/devman/api_limit?device_id='+id+'&rate_limit='+up+'&rate_limit_down='+dn).then(load);
+  fetch('/cgi-bin/luci/admin/network/devman/api_limit?device_id='+id+'&rate_limit='+up+'&rate_limit_down='+dn).then(load);
  };
  m.querySelector('#dm-up').focus();
  m.querySelector('#dm-up').onkeydown=function(e){if(e.key==='Enter')m.querySelector('#dm-dn').focus()};
@@ -144,7 +144,7 @@ function rn(id,n){
  m.querySelector('.dm-btn-save').onclick=function(){
   var v=m.querySelector('#dm-rn').value;
   m.remove();
-  if(v&&v!==n)fetch('/cgi-bin/luci/admin/devman/api_limit?device_id='+id+'&rate_limit=-1&alias='+encodeURIComponent(v)).then(load);
+  if(v&&v!==n)fetch('/cgi-bin/luci/admin/network/devman/api_limit?device_id='+id+'&rate_limit=-1&alias='+encodeURIComponent(v)).then(load);
  };
  m.querySelector('#dm-rn').focus();
  m.querySelector('#dm-rn').onkeydown=function(e){if(e.key==='Enter')m.querySelector('.dm-btn-save').click()};
