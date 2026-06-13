@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -150,13 +151,50 @@ func getLeaseFile() string {
 	return "/etc/dhcp.leases"
 }
 
+func netbiosQuery(ip string) string {
+	// NetBIOS Node Status query on UDP 137
+	conn, err := net.DialTimeout("udp", ip+":137", 2*time.Second)
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	// NODE STATUS REQUEST
+	req := make([]byte, 50)
+	req[0], req[1] = 0xa2, 0x48 // transaction ID
+	req[2], req[4], req[5] = 0x00, 0x00, 0x01 // flags, questions
+	req[11] = 0x20 // name length = 32
+	for i := 12; i < 44; i++ {
+		req[i] = 0x43
+	}
+	req[43] = 0x00       // terminator
+	req[44], req[45] = 0x00, 0x21 // type = NBSTAT
+	req[46], req[47] = 0x00, 0x01 // class = IN
+	conn.Write(req)
+	resp := make([]byte, 256)
+	conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, _ := conn.Read(resp)
+	if n < 57 {
+		return ""
+	}
+	numNames := int(resp[56])
+	for i := 0; i < numNames && 57+i*18+16 <= n; i++ {
+		off := 57 + i*18
+		name := strings.TrimRight(string(resp[off:off+15]), " \x00")
+		if len(name) > 0 && int(resp[off+15]) == 0x00 { // Workstation service
+			return name
+		}
+	}
+	return ""
+}
+
 func resolveHostnamesLoop() {
 	for {
-		rows, _ := db.Query("SELECT DISTINCT ipv4 FROM devices WHERE hostname='' AND ipv4!='' AND isIPv4")
+		rows, _ := db.Query("SELECT DISTINCT ipv4 FROM devices WHERE hostname='' AND ipv4!=''")
 		if rows != nil {
 			for rows.Next() {
 				var ip string
 				rows.Scan(&ip)
+				// Method 1: DNS reverse (nslookup)
 				out, err := exec.Command("nslookup", ip).Output()
 				if err == nil {
 					for _, line := range strings.Split(string(out), "\n") {
@@ -170,10 +208,15 @@ func resolveHostnamesLoop() {
 						}
 					}
 				}
+				// Method 2: NetBIOS (Windows)
+				if nb := netbiosQuery(ip); nb != "" {
+					upsertDevice(ip, "", nb, "", "")
+					db.Exec("UPDATE devices SET hostname=? WHERE ipv4=? AND hostname=''", nb, ip)
+				}
 			}
 			rows.Close()
 		}
-		time.Sleep(30 * time.Second)
+		time.Sleep(15 * time.Second)
 	}
 }
 

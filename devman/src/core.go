@@ -91,13 +91,8 @@ func mdnsLoop() {
 
 func neightLoop() {
 	log.Printf("NEIGH: started")
-	firstRun := true
 	for {
-		if firstRun {
-			exec.Command("/bin/ping", "-b", "-c", "1", "-W", "1", "192.168.5.255").Run()
-			firstRun = false
-		}
-		out, _ := exec.Command("sh", "-c", "ip neigh show | grep -v FAILED").Output()
+		out, _ := exec.Command("/usr/sbin/ip", "neigh", "show").Output()
 		for _, line := range strings.Split(string(out), "\n") {
 			fields := strings.Fields(line)
 			if len(fields) < 5 {
