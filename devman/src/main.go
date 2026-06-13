@@ -175,6 +175,58 @@ func netbiosQuery(ip string) string {
 	return ""
 }
 
+func llmnrQuery(ip string) string {
+	// LLMNR reverse query: send to 224.0.0.252:5355
+	parts := strings.Split(ip, ".")
+	if len(parts) != 4 { return "" }
+	qname := fmt.Sprintf("%s.%s.%s.%s.in-addr.arpa", parts[3], parts[2], parts[1], parts[0])
+	return mdnsQuery(qname, "12") // PTR record
+}
+
+func mdnsQuery(name string, qtype string) string {
+	conn, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("224.0.0.252"), Port: 5355})
+	if err != nil { return "" }
+	defer conn.Close()
+	conn.SetDeadline(time.Now().Add(2 * time.Second))
+	// Build DNS query
+	q := make([]byte, 0, 128)
+	q = append(q, 0x00, 0x00) // ID
+	q = append(q, 0x00, 0x00) // flags
+	q = append(q, 0x00, 0x01) // QDCOUNT=1
+	q = append(q, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00) // AN/NS/AR
+	for _, part := range strings.Split(name, ".") {
+		q = append(q, byte(len(part)))
+		q = append(q, []byte(part)...)
+	}
+	q = append(q, 0x00) // terminator
+	q = append(q, 0x00, 0x0c) // type PTR
+	q = append(q, 0x00, 0x01) // class IN
+	conn.Write(q)
+	buf := make([]byte, 512)
+	n, _ := conn.Read(buf)
+	if n < 12 { return "" }
+	ansCount := int(buf[6])<<8 | int(buf[7])
+	if ansCount == 0 { return "" }
+	off := 12
+	for off < n && buf[off] != 0x00 { off += int(buf[off]) + 1 }
+	off += 5 // terminator + QTYPE + QCLASS
+	if off+12 > n { return "" }
+	off += 2 // skip name pointer
+	off += 6 // type + class
+	off += 4 // TTL
+	rdLen := int(buf[off])<<8 | int(buf[off+1])
+	off += 2
+	if off+rdLen > n { return "" }
+	rd := buf[off:off+rdLen]
+	nameEnd := 0
+	for nameEnd < rdLen && rd[nameEnd] != 0x00 {
+		seg := int(rd[nameEnd])
+		if seg > 63 { return "" }
+		nameEnd += seg + 1
+	}
+	return strings.TrimSuffix(strings.ReplaceAll(string(rd[:nameEnd]), "\x00", "."), ".")
+}
+
 func resolveHostnamesLoop() {
 	for {
 		rows, _ := db.Query("SELECT DISTINCT ipv4 FROM devices WHERE hostname='' AND ipv4!=''")
@@ -196,7 +248,12 @@ func resolveHostnamesLoop() {
 						}
 					}
 				}
-				// Method 2: NetBIOS (Windows)
+				// Method 2: LLMNR (Windows)
+				if hn := llmnrQuery(ip); hn != "" {
+					upsertDevice(ip, "", hn, "", "")
+					db.Exec("UPDATE devices SET hostname=? WHERE ipv4=? AND hostname=''", hn, ip)
+				}
+				// Method 3: NetBIOS (Windows legacy)
 				if nb := netbiosQuery(ip); nb != "" {
 					upsertDevice(ip, "", nb, "", "")
 					db.Exec("UPDATE devices SET hostname=? WHERE ipv4=? AND hostname=''", nb, ip)
