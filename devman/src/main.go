@@ -140,9 +140,17 @@ curl -s -X POST http://127.0.0.1:9999/api/dhcp-event -H "Content-Type: applicati
 	exec.Command("/etc/init.d/dnsmasq", "reload").Run()
 }
 
+func getLeaseFile() string {
+	out, err := exec.Command("uci", "get", "dhcp.@dnsmasq[0].leasefile").Output()
+	if err == nil && len(out) > 1 {
+		return strings.TrimSpace(string(out))
+	}
+	return "/etc/dhcp.leases"
+}
+
 func fillHostnamesFromLeases() {
-	// dhcp.leases
-	out, _ := os.ReadFile("/etc/dhcp.leases")
+	leaseFile := getLeaseFile()
+	out, _ := os.ReadFile(leaseFile)
 	for _, line := range strings.Split(string(out), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) >= 4 {
@@ -150,6 +158,8 @@ func fillHostnamesFromLeases() {
 			hostname := fields[3]
 			if hostname != "" && hostname != "*" && isLAN(ip) {
 				upsertDevice(ip, "", hostname, "", "")
+				// Persist hostname in DB so it survives lease wipe
+				db.Exec("UPDATE devices SET hostname=? WHERE ipv4=? AND hostname=''", hostname, ip)
 			}
 		}
 	}
@@ -161,9 +171,12 @@ func fillHostnamesFromLeases() {
 			hostname := fields[1]
 			if hostname != "" && !strings.HasPrefix(hostname, "#") {
 				upsertDevice(fields[0], "", hostname, "", "")
+				db.Exec("UPDATE devices SET hostname=? WHERE ipv4=? AND hostname=''", hostname, fields[0])
 			}
 		}
 	}
+	// Restore persisted hostnames from DB for devices that lost them
+	db.Exec("UPDATE devices SET hostname=(SELECT hostname FROM devices d2 WHERE d2.mac=devices.mac AND d2.hostname!='' ORDER BY d2.last_seen DESC LIMIT 1) WHERE hostname=''")
 }
 
 func searchHostnameByIP(ip string) string {

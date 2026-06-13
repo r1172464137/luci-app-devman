@@ -221,6 +221,10 @@ func upsertDevice(ip, mac, hostname, vendorClass, opt55 string) int64 {
 	now := time.Now().Unix()
 	// Ignore IPv6 addresses
 	if ip != "" && strings.Contains(ip, ":") { ip = "" }
+	// Must have at least one identifiable attribute
+	if ip == "" && hostname == "" && mac == "" { return 0 }
+	// Must have IP or MAC to create a device
+	if ip == "" && mac == "" { return 0 }
 	fpHash := ""
 	if vendorClass != "" && opt55 != "" {
 		fpHash = fmt.Sprintf("%x", sha256.Sum256([]byte(vendorClass+opt55)))[:8]
