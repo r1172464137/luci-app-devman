@@ -21,43 +21,62 @@ func htons(v uint16) uint16 { b := make([]byte, 2); binary.BigEndian.PutUint16(b
 
 func mdnsLoop() {
 	for {
-		// Pure Go mDNS listener on multicast
-		addr, err := net.ResolveUDPAddr("udp", "224.0.0.251:5353")
+		// Raw socket mDNS listener — bypass Go's net.ListenMulticastUDP (broken on musl)
+		fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, syscall.IPPROTO_UDP)
 		if err != nil {
 			time.Sleep(60 * time.Second)
 			continue
 		}
-		conn, err := net.ListenMulticastUDP("udp", nil, addr)
-		if err != nil {
+		syscall.SetsockoptInt(fd, syscall.SOL_SOCKET, syscall.SO_REUSEADDR, 1)
+		sa := &syscall.SockaddrInet4{Port: 5353}
+		copy(sa.Addr[:], net.ParseIP("224.0.0.251").To4())
+		if err := syscall.Bind(fd, &syscall.SockaddrInet4{Port: 5353}); err != nil {
+			syscall.Close(fd)
 			time.Sleep(60 * time.Second)
 			continue
 		}
-		conn.SetDeadline(time.Now().Add(5 * time.Second))
+		// Join multicast group
+		var mreq [8]byte
+		copy(mreq[0:4], net.ParseIP("224.0.0.251").To4())
+		syscall.SetsockoptString(fd, syscall.IPPROTO_IP, syscall.IP_ADD_MEMBERSHIP, string(mreq[:]))
+		// Set timeout
+		tv := syscall.Timeval{Sec: 5}
+		syscall.SetsockoptTimeval(fd, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &tv)
+
 		buf := make([]byte, 2048)
 		for {
-			n, _, err := conn.ReadFromUDP(buf)
+			n, _, err := syscall.Recvfrom(fd, buf, 0)
 			if err != nil {
 				break
 			}
 			if n < 12 || buf[2]&0x80 != 0x80 {
 				continue
-			} // Only DNS responses (QR=1)
+			}
+			// Quick scan for .local hostname in response
 			data := string(buf[:n])
-			// Extract hostname and IP from mDNS response
-			for _, line := range strings.Split(data, "\n") {
-				if !strings.Contains(line, ".local") {
-					continue
-				}
-				parts := strings.Fields(line)
-				for i, p := range parts {
-					if strings.HasSuffix(p, ".local") && i+1 < len(parts) {
-						hostname := strings.TrimSuffix(p, ".local")
-						hostname = strings.TrimSuffix(hostname, ".")
-						if len(hostname) > 0 {
-							// Find IP in the response
-							for j := 0; j < len(parts); j++ {
-								if isIPv4(parts[j]) && strings.HasPrefix(parts[j], "192.168") {
-									upsertDevice(parts[j], "", hostname, "", "")
+			if !strings.Contains(data, ".local") {
+				continue
+			}
+			for i := 12; i < n-8; i++ {
+				// Look for A record (type=1) with IPv4 in answer
+				if buf[i] == 0xc0 && buf[i+1] == 0x0c && i+12 < n {
+					// Compressed name pointer, check for A record type
+					if buf[i+2] == 0x00 && buf[i+3] == 0x01 && buf[i+8] == 0x00 && buf[i+9] == 0x04 {
+						ip := fmt.Sprintf("%d.%d.%d.%d", buf[i+10], buf[i+11], buf[i+12], buf[i+13])
+						if strings.HasPrefix(ip, "192.168") {
+							// Find hostname before this answer
+							for j := 12; j < i; j++ {
+								segLen := int(buf[j])
+								if segLen > 0 && segLen < 64 && j+segLen+1 < n-1 && buf[j+segLen+1] == 0x00 {
+									hostname := string(buf[j+1 : j+1+segLen])
+									nextOff := j + segLen + 1
+									if nextOff < n-1 && buf[nextOff] > 0 && nextOff+int(buf[nextOff]) < n {
+										hostname += "." + string(buf[nextOff+1:nextOff+1+int(buf[nextOff])])
+									}
+									if len(hostname) > 0 && !strings.Contains(hostname, "\x00") {
+										upsertDevice(ip, "", hostname, "", "")
+									}
+									break
 								}
 							}
 						}
@@ -65,7 +84,7 @@ func mdnsLoop() {
 				}
 			}
 		}
-		conn.Close()
+		syscall.Close(fd)
 		time.Sleep(60 * time.Second)
 	}
 }
