@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"time"
 	"syscall"
 
 	_ "modernc.org/sqlite"
@@ -65,6 +66,7 @@ func main() {
 	go mdnsLoop()
 	go conntrackLoop()
 	go leaseLoop()
+	go resolveHostnamesLoop()
 	go dhcpSniffLoop()
 	go reconcileLoop()
 
@@ -148,6 +150,33 @@ func getLeaseFile() string {
 	return "/etc/dhcp.leases"
 }
 
+func resolveHostnamesLoop() {
+	for {
+		rows, _ := db.Query("SELECT DISTINCT ipv4 FROM devices WHERE hostname='' AND ipv4!='' AND isIPv4")
+		if rows != nil {
+			for rows.Next() {
+				var ip string
+				rows.Scan(&ip)
+				out, err := exec.Command("nslookup", ip).Output()
+				if err == nil {
+					for _, line := range strings.Split(string(out), "\n") {
+						if strings.Contains(line, "name =") {
+							hn := strings.TrimSpace(strings.Split(line, "name =")[1])
+							hn = strings.TrimSuffix(hn, ".")
+							if len(hn) > 0 && hn != "localhost" {
+								upsertDevice(ip, "", hn, "", "")
+								db.Exec("UPDATE devices SET hostname=? WHERE ipv4=? AND hostname=''", hn, ip)
+							}
+						}
+					}
+				}
+			}
+			rows.Close()
+		}
+		time.Sleep(30 * time.Second)
+	}
+}
+
 func fillHostnamesFromLeases() {
 	leaseFile := getLeaseFile()
 	out, _ := os.ReadFile(leaseFile)
@@ -177,6 +206,28 @@ func fillHostnamesFromLeases() {
 	}
 	// Restore persisted hostnames from DB for devices that lost them
 	db.Exec("UPDATE devices SET hostname=(SELECT hostname FROM devices d2 WHERE d2.mac=devices.mac AND d2.hostname!='' ORDER BY d2.last_seen DESC LIMIT 1) WHERE hostname=''")
+	// Active reverse DNS via dnsmasq
+	rows, _ := db.Query("SELECT DISTINCT ipv4 FROM devices WHERE hostname='' AND ipv4!=''")
+	if rows != nil {
+		defer rows.Close()
+		for rows.Next() {
+			var ip string
+			rows.Scan(&ip)
+			out, err := exec.Command("nslookup", ip).Output()
+			if err == nil {
+				for _, line := range strings.Split(string(out), "\n") {
+					if strings.Contains(line, "name =") {
+						hn := strings.TrimSpace(strings.Split(line, "name =")[1])
+						hn = strings.TrimSuffix(hn, ".")
+						if len(hn) > 0 && hn != "localhost" {
+							upsertDevice(ip, "", hn, "", "")
+							db.Exec("UPDATE devices SET hostname=? WHERE ipv4=? AND hostname=''", hn, ip)
+						}
+					}
+				}
+			}
+		}
+	}
 }
 
 func searchHostnameByIP(ip string) string {
