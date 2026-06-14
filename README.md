@@ -1,73 +1,119 @@
-# devman — OpenWrt 设备管理器
+<p align="center">
+  <strong><a href="./README.zh-CN.md">简体中文</a></strong>
+  &nbsp;·&nbsp;
+  <strong>English</strong>
+</p>
 
-实时设备监控与网络控制面板。
+<p align="center">
+  <img src="https://img.shields.io/badge/Go-1.21+-00ADD8?style=flat-square&logo=go&logoColor=white" alt="Go"/>
+  <img src="https://img.shields.io/badge/OpenWrt-LuCI-00B5E2?style=flat-square&logo=openwrt&logoColor=white" alt="OpenWrt"/>
+  <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License"/>
+  <img src="https://img.shields.io/badge/database-SQLite-003B57?style=flat-square&logo=sqlite&logoColor=white" alt="SQLite"/>
+  <img src="https://img.shields.io/badge/CGO-0-blue?style=flat-square" alt="CGO"/>
+</p>
 
-## 功能特性
+<h1 align="center">devman</h1>
+<h3 align="center">OpenWrt Device Manager</h3>
 
-| 功能 | 说明 |
-|------|------|
-| 自动发现 | `ip neigh` + conntrack，零主动探测 |
-| DHCP 指纹 | eBPF AF_PACKET 原始套接字捕获 DHCP Option 60+55 |
-| 设备识别 | MAC OUI 厂商识别（Apple/Samsung/Xiaomi/Huawei 等）+ 随机 MAC 检测 |
-| 速度监控 | 基于 conntrack 字节差分的实时流量统计 |
-| 封禁 | nftables set，O(1) 匹配，毫秒级生效 |
-| 限速 | nft mark + tc HTB + IFB 双方向精确限速 |
-| 设备合并 | DHCP 指纹自动去重，隐私随机 MAC 下保持设备历史 |
-| 持久化 | SQLite /etc/devman/devman.db |
+<p align="center">
+  Real-time device monitoring, blocking, and rate limiting for OpenWrt routers.
+  <br/>
+  <em>Card-style LuCI frontend · Pure Go daemon · Zero shell scripts</em>
+</p>
 
-## 项目结构
+---
+
+## ✨ Features
+
+| | | |
+|:--|------|------|
+| 🔍 | **Auto-discovery** | `ip neigh` + conntrack + dnsmasq lease — zero active probing |
+| 📡 | **DHCP Fingerprint** | BPF socket filter real-time capture of Option 60+55 |
+| 🏷️ | **Identification** | MAC OUI vendor detection + random MAC detection |
+| ⚡ | **Speed Monitor** | `/proc/net/nf_conntrack` byte diff + EMA smoothing, 5s window |
+| 🟢 | **Online Status** | Pure traffic-based: traffic→🟢 / <60s→🟢 / 60-120s→🟡 / >120s→⚫ |
+| 🚫 | **Block** | nftables raw PREROUTING + forward dual-hook drop |
+| 🎛️ | **Limit** | nft mark + tc HTB + IFB bidirectional rate limiting |
+| 🔄 | **Recovery** | Bidirectional restore (DB ↔ nft/tc), survives DB rebuild |
+| 💾 | **Persistence** | gorm + SQLite at `/etc/devman/devman.db` |
+| 🔒 | **Security** | Shell-injection safe Lua proxy, temp-file API transport |
+
+## 📁 Structure
 
 ```
 devman/
-├── devman/                  # Go 守护进程（纯 Go，零 shell 脚本）
-│   ├── src/main.go          # ~1100 行，单文件
-│   └── src/go.mod           # SQLite 依赖
-├── luci-app-devman/         # LuCI 卡片式前端
-│   ├── luasrc/controller/   # Lua API 代理
-│   ├── root/usr/share/luci/ # 视图 + 菜单
-│   └── po/                  # 中文翻译
-├── Makefile                 # 顶层构建
-└── README.md
+├── devman/src/               # Go daemon (pure Go, CGO_ENABLED=0)
+│   ├── main.go               # Entry + gorm init
+│   ├── model.go              # Device / DeviceMAC models
+│   ├── core.go               # Discovery / upsert / API / reconcile
+│   ├── bpf.go                # BPF socket filter DHCP sniffer
+│   ├── speed.go              # Speed calc + EMA smoothing
+│   ├── nft.go                # nftables block/limit + bidirectional recovery
+│   ├── tc.go                 # TC HTB + IFB lazy init
+│   ├── lan.go                # LAN subnet auto-detection
+│   ├── http.go               # HTTP route registration
+│   ├── vendor.go             # Device type detection by hostname keywords
+│   ├── oui.go                # MAC OUI vendor map
+│   └── util.go               # hexToByte / min
+├── luci-app-devman/           # LuCI card-style frontend
+│   ├── luasrc/controller/    # Lua API proxy (injection-safe)
+│   ├── htdocs/.../view/      # Single-page card UI
+│   └── po/                   # Chinese translations
+└── Makefile
 ```
 
-## 编译
+## 🔄 Data Flow
+
+```
+ip neigh (15s) ──→ IP + MAC ──┐
+conntrack (15s) ─→ Active IP ─┤
+dhcp.leases (30s) → Hostname ─┼──→ upsertDevice ──→ SQLite
+BPF (real-time) ──→ Fingerprint┘    │
+                                     ├─ MAC match
+                                     ├─ Hostname match
+                                     └─ IP match
+                                     
+/proc/net/nf_conntrack (5s) ──→ bps (EMA) ──→ In-memory map
+
+  Online:  🟢 traffic | 🟢 <60s | 🟡 60-120s | ⚫ >120s
+  Block:   DB is_blocked ←→ reconcile(5s) ←→ nft raw + forward
+  Limit:   DB rate_limit ←→ nftSetLimit ←→ nft mark + tc HTB + IFB
+```
+
+## 🚀 Build
 
 ```bash
-# Go 守护进程
-make
+# Go daemon (Go 1.21+)
+cd devman/src && CGO_ENABLED=0 go build -ldflags="-s -w" -o devman .
 
-# OpenWrt 软件包
+# OpenWrt packages
 make package/new/devman/compile V=s
 make package/new/luci-app-devman/compile V=s
 ```
 
-## API 接口
+## 📡 API
 
-| 路由 | 方法 | 说明 |
+| Route | Method | Description |
+|------|:--:|------|
+| `/api/devices` | `GET` | Device list with speed & online status |
+| `/api/block` | `POST` | Block/unblock `{device_id, block}` |
+| `/api/limit` | `POST` | Limit/rename `{device_id, rate_limit, rate_limit_down, alias}` |
+
+## 📦 Dependencies
+
+| Type | Package | Purpose |
 |------|------|------|
-| `/api/devices` | GET | 设备列表（触发速度计算） |
-| `/api/block` | POST | 封禁/解封 `{device_id, block}` |
-| `/api/limit` | POST | 限速/重命名 `{device_id, rate_limit, rate_limit_down, alias}` |
-| `/api/dhcp-event` | POST | DHCP 指纹上报 |
+| kmod | `kmod-ifb` | IFB virtual NIC, upload limiting |
+| kmod | `kmod-sched-core` | HTB qdisc + fw filter |
+| kmod | `kmod-sched-act-mirred` | mirred redirect action |
+| userspace | `tc-tiny` / `tc-full` | tc CLI |
+| userspace | `nftables` (firewall4) | Block + mark |
+| Go | `gorm.io/gorm` | ORM |
+| Go | `github.com/glebarez/sqlite` | Pure-Go SQLite driver |
+| Go | `golang.org/x/net/bpf` | BPF bytecode assembly |
 
-## 依赖
+---
 
-| 类型 | 包名 | 用途 |
-|------|------|------|
-| 内核模块 | `kmod-ifb` | IFB 虚拟网卡，上路限速 |
-| 内核模块 | `kmod-sched-core` | HTB 队列 + fw 过滤器 |
-| 内核模块 | `kmod-sched-act-police` | ingress police 丢包动作 |
-| 内核模块 | `kmod-sched-act-mirred` | mirred 流量重定向 |
-| 用户空间 | `tc-tiny` 或 `tc-full` | tc 命令行工具 |
-| 用户空间 | `nftables` (firewall4) | 封禁 + mark |
-| 内核 | eBPF (CONFIG_DEBUG_INFO_BTF) | DHCP 嗅探（可选，回退 AF_PACKET） |
-| 数据库 | `libsqlite3` | 设备持久化 |
-
-## 编译依赖
-
-- Go 1.21+
-- OpenWrt SDK / Buildroot
-
-## 许可
-
-MIT
+<p align="center">
+  <sub>MIT License · <a href="https://github.com/r1172464137/luci-app-devman">GitHub</a></sub>
+</p>

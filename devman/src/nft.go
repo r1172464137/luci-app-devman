@@ -3,14 +3,22 @@ package main
 import (
 	"fmt"
 	"os/exec"
+	"strconv"
 	"strings"
 )
 
 func nftInit() {
 	exec.Command("nft", "add", "table", "ip", "devman").Run()
 	exec.Command("nft", "add", "set", "ip", "devman", "blocked_ip", "{", "type", "ipv4_addr", ";", "}").Run()
+	// LAN subnet set for allowing local traffic
+	exec.Command("nft", "add", "set", "ip", "devman", "lan_subnet", "{", "type", "ipv4_addr", ";", "flags", "interval", ";", "}").Run()
+	// Raw PREROUTING drop — fires before passwall TPROXY, only blocks WAN-bound traffic
+	exec.Command("nft", "add", "chain", "ip", "devman", "raw_block", "{", "type", "filter", "hook", "prerouting", "priority", "raw", ";", "}").Run()
+	exec.Command("nft", "add", "rule", "ip", "devman", "raw_block", "iifname", lanIface, "ip", "saddr", "@blocked_ip", "ip", "daddr", "!=", "@lan_subnet", "drop").Run()
+	// Forward chain for non-proxied traffic
 	exec.Command("nft", "add", "chain", "ip", "devman", "forward", "{", "type", "filter", "hook", "forward", "priority", "filter", "-", "1", ";", "}").Run()
-	exec.Command("nft", "add", "rule", "ip", "devman", "forward", "ip", "saddr", "@blocked_ip", "drop").Run()
+	exec.Command("nft", "add", "rule", "ip", "devman", "forward", "iifname", lanIface, "ip", "saddr", "@blocked_ip", "ip", "daddr", "!=", "@lan_subnet", "drop").Run()
+	// Limit marks
 	exec.Command("nft", "add", "set", "ip", "devman", "ul_mark", "{", "type", "ipv4_addr", ";", "}").Run()
 	exec.Command("nft", "add", "set", "ip", "devman", "dl_mark", "{", "type", "ipv4_addr", ";", "}").Run()
 	exec.Command("nft", "add", "rule", "ip", "devman", "forward", "ip", "saddr", "@ul_mark", "meta", "mark", "set", "0x80000000").Run()
@@ -24,16 +32,86 @@ func nftBlock(ip string)   { exec.Command("nft", "add", "element", "ip", "devman
 func nftUnblock(ip string) { exec.Command("nft", "delete", "element", "ip", "devman", "blocked_ip", "{", ip, "}").Run() }
 
 func restoreRateLimits() {
-	rows, _ := db.Query("SELECT DISTINCT ipv4, COALESCE(rate_limit,0), COALESCE(rate_limit_dn,0) FROM devices WHERE ipv4!='' AND (rate_limit>0 OR rate_limit_dn>0)")
-	if rows != nil {
-		defer rows.Close()
-		for rows.Next() {
-			var ip string
-			var ul, dl int
-			rows.Scan(&ip, &ul, &dl)
-			nftSetLimit(ip, ul, dl)
+	// Restore from DB → nft/tc
+	var devs []Device
+	db.Where("ipv4 != '' AND (rate_limit > 0 OR rate_limit_dn > 0)").Find(&devs)
+	for _, d := range devs {
+		nftSetLimit(d.IPv4, d.RateLimit, d.RateLimitDn)
+	}
+	// Reverse: restore from nft/tc → DB (survives DB rebuild)
+	restoreLimitsFromNft()
+}
+
+func restoreLimitsFromNft() {
+	// Scan ul_mark and dl_mark sets to find IPs with active limit rules
+	out, err := exec.Command("nft", "list", "set", "ip", "devman", "ul_mark").Output()
+	if err != nil {
+		return
+	}
+	for _, ip := range parseNftElements(string(out)) {
+		var dev Device
+		if db.Where("ipv4 = ? AND rate_limit = 0", ip).First(&dev).Error == nil {
+			// Read actual rate from tc
+			prio := int(hashIp(ip))
+			rate := readTcRate("ifb0", prio)
+			if rate > 0 {
+				db.Model(&dev).Update("rate_limit", rate)
+			}
 		}
 	}
+	out, err = exec.Command("nft", "list", "set", "ip", "devman", "dl_mark").Output()
+	if err != nil {
+		return
+	}
+	for _, ip := range parseNftElements(string(out)) {
+		var dev Device
+		if db.Where("ipv4 = ? AND rate_limit_dn = 0", ip).First(&dev).Error == nil {
+			prio := int(hashIp(ip))
+			rate := readTcRate(lanIface, prio)
+			if rate > 0 {
+				db.Model(&dev).Update("rate_limit_dn", rate)
+			}
+		}
+	}
+}
+
+func parseNftElements(raw string) []string {
+	start := strings.Index(raw, "elements = {")
+	if start < 0 {
+		return nil
+	}
+	end := strings.Index(raw[start:], "}")
+	if end < 0 {
+		return nil
+	}
+	var ips []string
+	for _, ip := range strings.Split(raw[start+13:start+end], ",") {
+		ip = strings.TrimSpace(ip)
+		if ip != "" {
+			ips = append(ips, ip)
+		}
+	}
+	return ips
+}
+
+func readTcRate(dev string, prio int) int {
+	out, err := exec.Command("tc", "class", "show", "dev", dev, "classid", fmt.Sprintf("1:%d", prio)).Output()
+	if err != nil {
+		return 0
+	}
+	fields := strings.Fields(string(out))
+	for i, f := range fields {
+		if f == "rate" && i+1 < len(fields) {
+			val := fields[i+1]
+			s := strings.TrimSuffix(strings.TrimSuffix(val, "Mbit"), "Kbit")
+			v, _ := strconv.Atoi(s)
+			if strings.Contains(val, "Mbit") {
+				return v * 1000000
+			}
+			return v * 1000
+		}
+	}
+	return 0
 }
 
 func nftCleanup() {

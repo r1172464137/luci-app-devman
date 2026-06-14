@@ -69,8 +69,8 @@ function fmtSpeed(bps){if(!bps||bps>1e12)return'0';if(bps>=1e9)return(bps/1e9).t
 function vendorIcon(t){
  var m={'Xiaomi':'#ff6900','Samsung':'#3c6cfa','Apple':'#555','Huawei':'#cf0a2c',
   'OnePlus':'#eb0028','Google':'#4285f4','Windows':'#0078d4','Linux':'#f5a623',
-  'Android':'#3ddc84','iOS':'#999','IoT':'#888','Mobile':'#888'};
- if(t==='Unknown'||t==='Mobile'||t==='Linux'||!t)return'<svg width="18" height="18" viewBox="0 0 140 160" style="flex-shrink:0"><ellipse cx="70" cy="110" rx="55" ry="40" fill="#222"/><ellipse cx="70" cy="65" rx="40" ry="35" fill="#222"/><ellipse cx="55" cy="100" rx="22" ry="22" fill="#222"/><ellipse cx="85" cy="100" rx="22" ry="22" fill="#222"/><ellipse cx="50" cy="60" rx="8" ry="10" fill="#fff"/><ellipse cx="90" cy="60" rx="8" ry="10" fill="#fff"/><circle cx="52" cy="58" r="3" fill="#111"/><circle cx="92" cy="58" r="3" fill="#111"/><path d="M55 78Q70 70 85 78" stroke="#f5a623" stroke-width="4" fill="none" stroke-linecap="round"/><ellipse cx="70" cy="105" rx="25" ry="20" fill="#fff"/></svg>';
+  'Android':'#3ddc84','iOS':'#999','IoT':'#888'};
+ if(t==='Unknown'||t==='Linux'||!t)return'<svg width="18" height="18" viewBox="0 0 140 160" style="flex-shrink:0"><ellipse cx="70" cy="110" rx="55" ry="40" fill="#222"/><ellipse cx="70" cy="65" rx="40" ry="35" fill="#222"/><ellipse cx="55" cy="100" rx="22" ry="22" fill="#222"/><ellipse cx="85" cy="100" rx="22" ry="22" fill="#222"/><ellipse cx="50" cy="60" rx="8" ry="10" fill="#fff"/><ellipse cx="90" cy="60" rx="8" ry="10" fill="#fff"/><circle cx="52" cy="58" r="3" fill="#111"/><circle cx="92" cy="58" r="3" fill="#111"/><path d="M55 78Q70 70 85 78" stroke="#f5a623" stroke-width="4" fill="none" stroke-linecap="round"/><ellipse cx="70" cy="105" rx="25" ry="20" fill="#fff"/></svg>';
  var c=m[t]||'#999',n=t;
  if(n.length>8)n=n.substring(0,7)+'…';
  return '<span style="color:'+c+';font-weight:700;font-size:15px;flex-shrink:0;line-height:1">'+esc(n)+'</span>';
@@ -85,7 +85,7 @@ function load(){
   var c=document.getElementById('dm-content');
   if(!d||!d.length){c.innerHTML='<p class="dm-empty">暂无设备</p>';return}
   var known=[],unknown=[];
-  d.forEach(function(dev){ (dev.device_type==='Unknown'||dev.device_type==='Mobile'?unknown:known).push(dev); });
+  d.forEach(function(dev){ (dev.device_type==='Unknown'?unknown:known).push(dev); });
   known.sort(function(a,b){ return (a.current_ip||'').localeCompare(b.current_ip||''); });
   unknown.sort(function(a,b){ return (a.current_ip||'').localeCompare(b.current_ip||''); });
   var h='<div class="dm-grid">';

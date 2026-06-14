@@ -8,6 +8,18 @@ function index()
 	entry({"admin", "network", "devman", "api_limit"}, call("api_limit")).sysauth = false
 end
 
+-- Helper: POST JSON to Go backend via temp file (avoids shell injection)
+local function curl_post(path, body)
+	local f = io.open("/tmp/devman_req.json", "w")
+	if f then f:write(body); f:close() end
+	os.execute("curl -s -X POST http://127.0.0.1:9999" .. path .. " -d @/tmp/devman_req.json &")
+end
+
+-- Helper: escape string for JSON (handle \, ", newlines)
+local function json_escape(s)
+	return (s:gsub("\\", "\\\\"):gsub('"', '\\"'):gsub("\n", "\\n"):gsub("\r", "\\r"))
+end
+
 function api_devices()
 	local http = require "luci.http"
 	local f = io.popen("curl -s http://127.0.0.1:9999/api/devices")
@@ -19,10 +31,11 @@ end
 
 function api_block()
 	local http = require "luci.http"
-	local dev = http.formvalue("device_id")
+	local dev = tonumber(http.formvalue("device_id"))
 	local block = http.formvalue("block")
 	if dev then
-		os.execute('curl -s -X POST http://127.0.0.1:9999/api/block -d \'{"device_id":'..dev..',"block":'..(block=="1" and "true" or "false")..'}\' &')
+		local body = string.format('{"device_id":%d,"block":%s}', dev, (block == "1" and "true" or "false"))
+		curl_post("/api/block", body)
 	end
 	http.prepare_content("application/json")
 	http.write('{"ok":true}')
@@ -30,15 +43,16 @@ end
 
 function api_limit()
 	local http = require "luci.http"
-	local dev = http.formvalue("device_id")
-	local limit = http.formvalue("rate_limit") or "0"
-	local limit_dn = http.formvalue("rate_limit_down") or "-1"
+	local dev = tonumber(http.formvalue("device_id"))
+	local limit = tonumber(http.formvalue("rate_limit")) or 0
+	local limit_dn = tonumber(http.formvalue("rate_limit_down")) or -1
 	local alias = http.formvalue("alias")
 	if dev then
-		local body = '{"device_id":'..dev..',"rate_limit":'..limit..',"rate_limit_down":'..limit_dn
-		if alias then body = body..',"alias":"'..alias..'"' end
-		body = body..'}'
-		os.execute("curl -s -X POST http://127.0.0.1:9999/api/limit -d '"..body.."'")
+		local body_parts = { string.format('"device_id":%d,"rate_limit":%d,"rate_limit_down":%d', dev, limit, limit_dn) }
+		if alias and alias ~= "" then
+			body_parts[#body_parts + 1] = string.format('"alias":"%s"', json_escape(alias))
+		end
+		curl_post("/api/limit", "{" .. table.concat(body_parts, ",") .. "}")
 	end
 	http.prepare_content("application/json")
 	http.write('{"ok":true}')

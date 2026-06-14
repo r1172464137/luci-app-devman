@@ -1,31 +1,49 @@
 package main
 
 import (
-	"os/exec"
+	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
-// ====== speed calculation via conntrack ======
-
 var (
+	speedMu    sync.RWMutex
+	speedIn    = map[string]uint64{}
+	speedOut   = map[string]uint64{}
 	spPrevUp   = map[string]uint64{}
 	spPrevDown = map[string]uint64{}
 	spFirst    = map[string]bool{}
 	spLastTime time.Time
+	spLastGC   time.Time
 )
 
+func speedLoop() {
+	for {
+		calcSpeed()
+		time.Sleep(5 * time.Second)
+	}
+}
+
 func calcSpeed() {
-	now := time.Now().Unix()
-	out, _ := exec.Command("/usr/sbin/conntrack", "-L").Output()
+	data, err := os.ReadFile("/proc/net/nf_conntrack")
+	if err != nil {
+		return
+	}
 	curUp := map[string]uint64{}
 	curDown := map[string]uint64{}
-	for _, line := range strings.Split(string(out), "\n") {
-		sIdx := strings.Index(line, " src=")
+	for _, line := range strings.Split(string(data), "\n") {
+		// Format: ... src=IP dst=IP ... bytes=N ... [mark]
+		sIdx := strings.Index(line, "src=")
 		if sIdx < 0 {
 			continue
 		}
-		src := strings.SplitN(line[sIdx+5:], " ", 2)[0]
+		rest := line[sIdx+4:]
+		fields := strings.Fields(rest)
+		if len(fields) < 1 {
+			continue
+		}
+		src := fields[0]
 		if !isLAN(src) || src == "127.0.0.1" {
 			continue
 		}
@@ -41,22 +59,11 @@ func calcSpeed() {
 			curDown[src] += dn
 		}
 	}
-	if spLastTime.IsZero() {
-		for ip := range curUp {
-			spPrevUp[ip] = curUp[ip]
-		}
-		for ip := range curDown {
-			spPrevDown[ip] = curDown[ip]
-		}
-		spLastTime = time.Now()
-		return
-	}
 	interval := float64(time.Since(spLastTime).Seconds())
-	if interval < 1 {
-		interval = 3
+	if interval < 1 || spLastTime.IsZero() {
+		interval = 1
 	}
 	spLastTime = time.Now()
-	mu.Lock()
 	allIPs := map[string]bool{}
 	for ip := range curUp {
 		allIPs[ip] = true
@@ -64,6 +71,9 @@ func calcSpeed() {
 	for ip := range curDown {
 		allIPs[ip] = true
 	}
+
+	now := time.Now().Unix()
+	speedMu.Lock()
 	for ip := range allIPs {
 		if !spFirst[ip] {
 			spFirst[ip] = true
@@ -80,11 +90,41 @@ func calcSpeed() {
 		}
 		spPrevUp[ip] = curUp[ip]
 		spPrevDown[ip] = curDown[ip]
+		// Show real speed when significant; keep decaying if traffic is tiny
+		if up > 0 && up > speedIn[ip]/3 {
+			speedIn[ip] = up
+		} else if up == 0 {
+			speedIn[ip] = uint64(float64(speedIn[ip]) * 0.7)
+		}
+		if dn > 0 && dn > speedOut[ip]/3 {
+			speedOut[ip] = dn
+		} else if dn == 0 {
+			speedOut[ip] = uint64(float64(speedOut[ip]) * 0.7)
+		}
+		// Update last_seen for any IP with traffic
 		if up > 0 || dn > 0 {
-			db.Exec("INSERT INTO traffic (device_id,speed_in,speed_out,recorded_at) SELECT id,?,?,? FROM devices WHERE ipv4=? AND ipv4!=''", up, dn, now, ip)
+			db.Model(&Device{}).Where("ipv4 = ?", ip).Update("last_seen", now)
 		}
 	}
-	mu.Unlock()
+	if time.Since(spLastGC) > 10*time.Minute {
+		for k := range spPrevUp {
+			if _, ok := curUp[k]; !ok {
+				delete(spPrevUp, k)
+				delete(spPrevDown, k)
+				delete(spFirst, k)
+				delete(speedIn, k)
+				delete(speedOut, k)
+			}
+		}
+		spLastGC = time.Now()
+	}
+	speedMu.Unlock()
+}
+
+func getSpeed(ip string) (in, out uint64) {
+	speedMu.RLock()
+	defer speedMu.RUnlock()
+	return speedIn[ip], speedOut[ip]
 }
 
 func atoui(s string) (uint64, error) {
