@@ -169,11 +169,11 @@ func dhcpBPFLoop() {
 
 		// ACK (type=5) from server → confirmed lease
 		if op == 2 && msgType == 5 {
-			upsertDevice(ip, mac, hostname, vendorClass)
+			upsertDevice(ip, mac, hostname, vendorClass, "")
 		}
 		// REQUEST (type=3) from client → fingerprint data
 		if op == 1 && msgType == 3 && vendorClass != "" {
-			upsertDevice(ip, mac, hostname, vendorClass)
+			upsertDevice(ip, mac, hostname, vendorClass, "")
 		}
 	}
 }
