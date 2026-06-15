@@ -10,7 +10,6 @@ import (
 	"golang.org/x/net/bpf"
 )
 
-// sockFilter struct matching kernel's sock_filter
 type sockFilter struct {
 	Code uint16
 	Jt   uint8
@@ -23,10 +22,8 @@ type sockFprog struct {
 	Filter *sockFilter
 }
 
-// dhcpBPFLoop opens an AF_PACKET socket with BPF filter for DHCP,
-// parses REQUEST/ACK packets and extracts hostname, vendor_class, opt55.
-// Unlike dnsmasqLeaseLoop which polls the lease file, this captures real-time
-// DHCP events directly from the kernel.
+func htons(v uint16) uint16 { return (v>>8)&0xff | (v<<8)&0xff00 }
+
 func dhcpBPFLoop() {
 	prog, err := bpf.Assemble([]bpf.Instruction{
 		bpf.LoadAbsolute{Off: 9, Size: 1},
@@ -51,6 +48,30 @@ func dhcpBPFLoop() {
 	}
 	defer syscall.Close(fd)
 
+	// Bind to LAN interface
+	ifi, _ := syscall.NetlinkRIB(syscall.RTM_GETLINK, syscall.AF_UNSPEC)
+	if ifi != nil {
+		msgs, _ := syscall.ParseNetlinkMessage(ifi)
+		for _, m := range msgs {
+			if m.Header.Type == syscall.RTM_NEWLINK {
+				imsg := (*syscall.IfInfomsg)(unsafe.Pointer(&m.Data[0]))
+				name := strings.TrimRight(string(m.Data[syscall.SizeofIfInfomsg:]), "\x00")
+				if name == lanIface {
+					addr := syscall.SockaddrLinklayer{
+						Protocol: htons(syscall.ETH_P_IP),
+						Ifindex:  int(imsg.Index),
+					}
+					if err := syscall.Bind(fd, &addr); err != nil {
+						log.Printf("DHCP_BPF: bind %s err=%v", lanIface, err)
+					} else {
+						log.Printf("DHCP_BPF: bound to %s (idx=%d)", lanIface, imsg.Index)
+					}
+					break
+				}
+			}
+		}
+	}
+
 	// Attach BPF
 	insns := make([]sockFilter, len(prog))
 	for i, r := range prog {
@@ -67,7 +88,7 @@ func dhcpBPFLoop() {
 		return
 	}
 
-	log.Printf("DHCP_BPF: started")
+	log.Printf("DHCP_BPF: started on %s", lanIface)
 
 	buf := make([]byte, 4096)
 	for {
@@ -78,15 +99,11 @@ func dhcpBPFLoop() {
 		if err != nil {
 			continue
 		}
-		// SOCK_DGRAM: offset 0 = IP start, IP hdr=20 + UDP hdr=8 + DHCP
 		dhcpOff := 20 + 8
-		// Check DHCP magic cookie: 0x63825363
 		if n < dhcpOff+244 || buf[dhcpOff+236] != 0x63 || buf[dhcpOff+237] != 0x82 ||
 			buf[dhcpOff+238] != 0x53 || buf[dhcpOff+239] != 0x63 {
 			continue
-		} // invalid/missing magic
-
-		// Validate BOOTP: op=1/2, htype=1(Ethernet), hlen=6(MAC)
+		}
 		op := buf[dhcpOff]
 		if op != 1 && op != 2 {
 			continue
@@ -94,18 +111,12 @@ func dhcpBPFLoop() {
 		if buf[dhcpOff+1] != 1 || buf[dhcpOff+2] != 6 {
 			continue
 		}
-
-		// Client MAC: must be 6 valid hex pairs
 		mac := fmt.Sprintf("%02x:%02x:%02x:%02x:%02x:%02x",
 			buf[dhcpOff+28], buf[dhcpOff+29], buf[dhcpOff+30],
 			buf[dhcpOff+31], buf[dhcpOff+32], buf[dhcpOff+33])
-		if len(mac) == 17 && mac[2] == ':' && mac[5] == ':' {
-			// valid MAC format
-		} else {
+		if len(mac) != 17 || mac[2] != ':' {
 			continue
 		}
-
-		// IP: yiaddr for REPLY, ciaddr for REQUEST
 		ip := fmt.Sprintf("%d.%d.%d.%d",
 			buf[dhcpOff+20], buf[dhcpOff+21], buf[dhcpOff+22], buf[dhcpOff+23])
 		if op == 1 {
@@ -115,15 +126,11 @@ func dhcpBPFLoop() {
 				ip = ciaddr
 			}
 		}
-
 		if ip == "0.0.0.0" {
 			continue
 		}
-
-		// Parse options
 		var msgType int
 		var hostname, vendorClass string
-		var opt55 []byte
 		optPos := dhcpOff + 240
 		for optPos < n-1 {
 			code := int(buf[optPos])
@@ -151,40 +158,29 @@ func dhcpBPFLoop() {
 				if optLen > 0 {
 					vendorClass = printable(buf[optPos+2 : optPos+2+optLen])
 				}
-			case 55:
-				if optLen > 0 {
-					opt55 = make([]byte, optLen)
-					copy(opt55, buf[optPos+2:optPos+2+optLen])
-				}
 			}
 			optPos += 2 + optLen
 		}
-
 		if hostname == "" && vendorClass == "" {
 			continue
 		}
-
 		log.Printf("DHCP_BPF: %s %s %s type=%d host=%q vc=%q", mac, ip,
 			map[bool]string{true: "RPL", false: "REQ"}[op == 2], msgType, hostname, vendorClass)
-
-		// ACK (type=5) from server → confirmed lease
 		if op == 2 && msgType == 5 {
-			upsertDevice(ip, mac, hostname, vendorClass, "")
+			upsertDevice(ip, mac, hostname, vendorClass)
 		}
-		// REQUEST (type=3) from client → fingerprint data
 		if op == 1 && msgType == 3 && vendorClass != "" {
-			upsertDevice(ip, mac, hostname, vendorClass, "")
+			upsertDevice(ip, mac, hostname, vendorClass)
 		}
 	}
 }
 
 func printable(b []byte) string {
-	return strings.Map(func(r rune) rune {
-		if r < 32 || r > 126 {
-			return '.'
+	var out []byte
+	for _, c := range b {
+		if c >= 32 && c < 127 {
+			out = append(out, c)
 		}
-		return r
-	}, string(b))
+	}
+	return string(out)
 }
-
-func htons(v uint16) uint16 { return (v>>8)&0xff | (v&0xff)<<8 }
