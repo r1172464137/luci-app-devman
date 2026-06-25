@@ -309,7 +309,9 @@ func mergeByOpt55Hash() {
 	}
 	for _, hash := range hashes {
 		var ids []int64
-		db.Model(&Device{}).Where("opt55_hash = ?", hash).Order("last_seen DESC").Pluck("id", &ids)
+		db.Model(&Device{}).Where("opt55_hash = ?", hash).
+			Order("CASE WHEN hostname != '' THEN 0 ELSE 1 END, last_seen DESC").
+			Pluck("id", &ids)
 		if len(ids) < 2 {
 			continue
 		}
