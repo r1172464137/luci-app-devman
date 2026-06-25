@@ -10,42 +10,11 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
-
-	"golang.org/x/net/bpf"
 )
-
-type sockFilter struct {
-	Code uint16
-	Jt   uint8
-	Jf   uint8
-	K    uint32
-}
-
-type sockFprog struct {
-	Len    uint16
-	Pad    uint16
-	Filter *sockFilter
-}
 
 func htons(v uint16) uint16 { return (v>>8)&0xff | (v<<8)&0xff00 }
 
 func dhcpBPFLoop() {
-	prog, err := bpf.Assemble([]bpf.Instruction{
-		bpf.LoadAbsolute{Off: 9, Size: 1},
-		bpf.JumpIf{Cond: bpf.JumpEqual, Val: 17, SkipTrue: 0, SkipFalse: 6},
-		bpf.LoadAbsolute{Off: 20, Size: 2},
-		bpf.JumpIf{Cond: bpf.JumpEqual, Val: 67, SkipTrue: 3, SkipFalse: 0},
-		bpf.LoadAbsolute{Off: 22, Size: 2},
-		bpf.JumpIf{Cond: bpf.JumpEqual, Val: 67, SkipTrue: 1, SkipFalse: 0},
-		bpf.JumpIf{Cond: bpf.JumpEqual, Val: 68, SkipTrue: 0, SkipFalse: 1},
-		bpf.RetConstant{Val: 65535},
-		bpf.RetConstant{Val: 0},
-	})
-	if err != nil {
-		log.Printf("DHCP_BPF: assemble err=%v", err)
-		return
-	}
-
 	fd, err := syscall.Socket(syscall.AF_PACKET, syscall.SOCK_DGRAM, int(htons(syscall.ETH_P_IP)))
 	if err != nil {
 		log.Printf("DHCP_BPF: socket err=%v", err)
@@ -84,46 +53,41 @@ func dhcpBPFLoop() {
 		log.Printf("DHCP_BPF: bind %s err=%v", lanIface, err)
 		return
 	}
-
-	insns := make([]sockFilter, len(prog))
-	for i, r := range prog {
-		insns[i] = sockFilter{Code: r.Op, Jt: r.Jt, Jf: r.Jf, K: r.K}
-	}
-	var fprog sockFprog
-	fprog.Len = uint16(len(insns))
-	fprog.Filter = &insns[0]
-	_, _, e := syscall.Syscall6(syscall.SYS_SETSOCKOPT, uintptr(fd),
-		uintptr(syscall.SOL_SOCKET), uintptr(syscall.SO_ATTACH_FILTER),
-		uintptr(unsafe.Pointer(&fprog)), uintptr(unsafe.Sizeof(fprog)), 0)
-	if e != 0 {
-		log.Printf("DHCP_BPF: SO_ATTACH_FILTER err=%v", e)
-		return
-	}
-
 	log.Printf("DHCP_BPF: bound to %s (idx=%d)", lanIface, ifIdx)
 
-	var buf [4096]byte
+	tv := syscall.Timeval{Sec: 5}
+	if err := syscall.SetsockoptTimeval(fd, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &tv); err != nil {
+		log.Printf("DHCP_BPF: rcvtimeo err=%v", err)
+	}
+
+	buf := make([]byte, 4096)
 	var pkts int64
 	lastLog := time.Now()
 	for {
-		tv := syscall.Timeval{Sec: 5}
-		syscall.SetsockoptTimeval(fd, syscall.SOL_SOCKET, syscall.SO_RCVTIMEO, &tv)
-		n, _, err := syscall.Recvfrom(fd, buf[:], 0)
+		n, _, err := syscall.Recvfrom(fd, buf, 0)
 		if err != nil {
-			if time.Since(lastLog) > 60*time.Second {
+			if time.Since(lastLog) > 30*time.Second {
 				log.Printf("DHCP_BPF: alive, %d DHCP packets captured so far", pkts)
 				lastLog = time.Now()
 			}
 			continue
 		}
 		pkts++
-
-		if n < 28 || buf[9] != 17 {
+		if n < 28 {
+			if pkts <= 5 { log.Printf("DHCP_BPF: pkt#%d too short n=%d", pkts, n) }
 			continue
 		}
 		sport := uint16(buf[20])<<8 | uint16(buf[21])
 		dport := uint16(buf[22])<<8 | uint16(buf[23])
+		if pkts <= 5 {
+			log.Printf("DHCP_BPF: pkt#%d len=%d proto=%d sport=%d dport=%d [%02x%02x%02x%02x]", pkts, n, buf[9], sport, dport, buf[0], buf[1], buf[2], buf[3])
+		}
+		if buf[9] != 17 {
+			if pkts <= 5 { log.Printf("DHCP_BPF:   -> skip: proto=%d != 17", buf[9]) }
+			continue
+		}
 		if sport != 67 && sport != 68 && dport != 67 && dport != 68 {
+			if pkts <= 5 { log.Printf("DHCP_BPF:   -> skip: port %d/%d not DHCP", sport, dport) }
 			continue
 		}
 
