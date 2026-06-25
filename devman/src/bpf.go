@@ -180,13 +180,8 @@ func dhcpBPFLoop() {
 		}
 
 		mu.Lock()
-		if op == 2 && msgType == 5 {
-			upsertDevice(ip, mac, hostname, vendorClass, opt55Hash)
-		}
-		if op == 1 && msgType == 3 && vendorClass != "" {
-			upsertDevice(ip, mac, hostname, vendorClass, opt55Hash)
-		}
-		if op == 1 && msgType == 1 && opt55Hash != "" {
+		// Capture any DHCP packet with useful data
+		if hostname != "" || vendorClass != "" || opt55Hash != "" {
 			upsertDevice(ip, mac, hostname, vendorClass, opt55Hash)
 		}
 		mu.Unlock()
