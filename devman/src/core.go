@@ -191,6 +191,14 @@ func upsertDeviceEx(ip, mac, hostname, vendorClass, opt55Hash string, updateLast
 			updateExisting(&dev, ip, mac, hostname, vendorClass, opt55Hash, devType, now, updateLastSeen)
 			return
 		}
+		// Tier 1b: MAC in device_macs (merged devices)
+		var dm DeviceMAC
+		if err := db.Where("mac = ?", mac).First(&dm).Error; err == nil {
+			if err := db.Where("id = ?", dm.DeviceID).First(&dev).Error; err == nil {
+				updateExisting(&dev, ip, mac, hostname, vendorClass, opt55Hash, devType, now, updateLastSeen)
+				return
+			}
+		}
 	}
 	// Tier 2: hostname
 	if hostname != "" {
