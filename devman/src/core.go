@@ -1,6 +1,7 @@
 package main
 
 import (
+	"log"
 	"strings"
 	"time"
 
@@ -110,6 +111,9 @@ func updateExisting(dev *models.Device, ip, mac, hostname, vendorClass, opt55Has
 	}
 	if devType != "" && devType != "Unknown" && (dev.DeviceType == "" || dev.DeviceType == "Unknown") {
 		updates["device_type"] = devType
+		if dev.DeviceType != devType {
+			log.Printf("CORE: updating device %d type from %q to %q (hostname=%q)", dev.ID, dev.DeviceType, devType, hostname)
+		}
 	}
 	// Only update MAC when matched by a strong identifier (not IP or hostname alone)
 	if matchBy == "opt55" || matchBy == "mac" {

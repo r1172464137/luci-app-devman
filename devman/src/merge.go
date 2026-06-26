@@ -54,11 +54,23 @@ func mergeByOpt55Hash() {
 	}
 }
 
+func fixDeviceTypes() {
+	var devs []models.Device
+	db.Where("device_type = ? AND hostname != ''", "Unknown").Find(&devs)
+	for _, d := range devs {
+		dt := detectType(d.Hostname, d.VendorClass)
+		if dt != "Unknown" && dt != d.DeviceType {
+			db.Model(&d).Update("device_type", dt)
+		}
+	}
+}
+
 func reconcileLoop() {
 	for {
 		time.Sleep(5 * time.Second)
 		mergeDuplicateHostnames()
 		mergeByOpt55Hash()
+		fixDeviceTypes()
 
 		var dbBlocked []string
 		db.Model(&models.Device{}).Where("is_blocked = 1 AND ipv4 != ''").Pluck("ipv4", &dbBlocked)
