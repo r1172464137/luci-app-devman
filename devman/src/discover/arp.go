@@ -45,11 +45,7 @@ func NeightLoop() {
 			}
 			ArpStates[ip] = state
 			if state != "FAILED" {
-				if UpsertDeviceNoSeen != nil {
-					UpsertDeviceNoSeen(ip, mac, "", "")
-				} else {
-					log.Printf("NEIGH: UpsertDeviceNoSeen is nil!")
-				}
+				UpsertDevice(ip, mac, "", "", "")
 			}
 		}
 		ArpMu.Unlock()
