@@ -41,7 +41,14 @@ createApp({
     deviceGroups() {
       const groups = [];
       if (this.knownDevices.length) {
-        this.knownDevices.sort((a,b) => (a.current_ip||'').localeCompare(b.current_ip||''));
+        this.knownDevices.sort((a,b) => {
+          const ipA = (a.current_ip||'').split('.').map(Number);
+          const ipB = (b.current_ip||'').split('.').map(Number);
+          for (let i = 0; i < 4; i++) {
+            if ((ipA[i]||0) !== (ipB[i]||0)) return (ipA[i]||0) - (ipB[i]||0);
+          }
+          return 0;
+        });
         groups.push({ label: '已知设备', devices: this.knownDevices });
       }
       return groups;
@@ -65,18 +72,27 @@ createApp({
     },
     esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'); },
     async load() {
-      try {
-        const r = await fetch(API + '_devices');
-        this.devices = await r.json();
-        this.loading = false;
-      } catch (e) { this.loading = false; }
+        // Don't refresh when modal is open to prevent UI disruption
+        if (this.showLimitModal || this.showRenameModal) return;
+        try {
+            const r = await fetch(API + '_devices');
+            this.devices = await r.json();
+            this.loading = false;
+        } catch (e) {
+            console.error('Failed to load devices:', e);
+            this.loading = false;
+        }
     },
     changeRefresh() {
       if (this.timer) clearInterval(this.timer);
       this.timer = setInterval(() => this.load(), this.refreshMs);
     },
     async toggleBlock(dev) {
-      await fetch(API + '_block?device_id=' + dev.id + '&block=' + (dev.is_blocked ? 0 : 1));
+      await fetch(API + '_block', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ device_id: dev.id, block: dev.is_blocked ? 0 : 1 })
+      });
       await this.load();
     },
     showLimit(dev) {
@@ -98,7 +114,11 @@ createApp({
     async applyLimit() {
       const up = Math.round(this.limitUp * parseInt(this.limitUpUnit)) || 0;
       const dn = Math.round(this.limitDn * parseInt(this.limitDnUnit)) || 0;
-      await fetch(API + '_limit?device_id=' + this.limitTarget.id + '&rate_limit=' + up + '&rate_limit_down=' + dn);
+      await fetch(API + '_limit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ device_id: this.limitTarget.id, rate_limit: up, rate_limit_down: dn })
+      });
       this.showLimitModal = false;
       await this.load();
     },
@@ -109,7 +129,11 @@ createApp({
     },
     async applyRename() {
       if (this.renameVal) {
-        await fetch(API + '_limit?device_id=' + this.renameTarget.id + '&rate_limit=-1&alias=' + encodeURIComponent(this.renameVal));
+        await fetch(API + '_limit', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ device_id: this.renameTarget.id, rate_limit: -1, alias: this.renameVal })
+        });
       }
       this.showRenameModal = false;
       await this.load();

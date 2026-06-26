@@ -117,9 +117,7 @@ func parseInt(s string) (int, error) {
 func SetupRouter() *chi.Mux {
 	r := chi.NewRouter()
 	r.Get("/api/devices", apiDevices)
-	r.Get("/api/block", apiBlock)
 	r.Post("/api/block", apiBlock)
-	r.Get("/api/limit", apiLimit)
 	r.Post("/api/limit", apiLimit)
 	return r
 }
