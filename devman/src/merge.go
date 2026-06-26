@@ -54,31 +54,11 @@ func mergeByOpt55Hash() {
 	}
 }
 
-func absorbNoFingerprint() {
-	var tracked []models.Device
-	db.Where("opt55_hash != ''").Find(&tracked)
-	if len(tracked) == 0 {
-		return
-	}
-	cutoff := time.Now().Unix() - 120
-	for _, t := range tracked {
-		var orphans []models.Device
-		db.Where("opt55_hash = '' AND hostname = '' AND last_seen < ? AND mac IN (SELECT mac FROM device_macs WHERE device_id = ?)", cutoff, t.ID).Find(&orphans)
-		for _, o := range orphans {
-			log.Printf("RECONCILE: absorbing device %d (no fingerprint) into %d (opt55=%s)", o.ID, t.ID, t.Opt55Hash)
-			db.Exec("INSERT OR IGNORE INTO device_macs (device_id, mac) SELECT ?, mac FROM device_macs WHERE device_id = ?", t.ID, o.ID)
-			db.Where("device_id = ?", o.ID).Delete(&models.DeviceMAC{})
-			db.Delete(&o)
-		}
-	}
-}
-
 func reconcileLoop() {
 	for {
 		time.Sleep(5 * time.Second)
 		mergeDuplicateHostnames()
 		mergeByOpt55Hash()
-		absorbNoFingerprint()
 
 		var dbBlocked []string
 		db.Model(&models.Device{}).Where("is_blocked = 1 AND ipv4 != ''").Pluck("ipv4", &dbBlocked)
