@@ -84,6 +84,8 @@
       </div>
       <div v-show="showUnknown" class="dm-grid" style="margin-top:12px">
         <div v-for="dev in unknownDevices" :key="dev.id" class="dm-card">
+          <div v-if="dev.is_blocked" class="dm-badge dm-badge-blocked">已封禁</div>
+          <div v-else-if="dev.rate_limit||dev.rate_limit_down" class="dm-badge dm-badge-limited">已限速</div>
           <div class="dm-card-top">
             <span :class="'dm-dot dm-dot-'+dev.online"></span>
             <span v-html="vendorIcon(dev.device_type)"></span>
@@ -93,7 +95,24 @@
             <span>{{ dev.current_ip }}</span>
             <span>{{ dev.current_mac }}</span>
           </div>
+          <div class="dm-speeds">
+            <div class="dm-speed-item dm-up">
+              <div class="dm-speed-label">上传</div>
+              <div class="dm-speed-value">{{ fmtSpeed(dev.speed_out) }}</div>
+            </div>
+            <div class="dm-speed-item dm-dn">
+              <div class="dm-speed-label">下载</div>
+              <div class="dm-speed-value">{{ fmtSpeed(dev.speed_in) }}</div>
+            </div>
+          </div>
           <div class="dm-actions">
+            <button v-if="dev.is_blocked" class="dm-act" title="解封" @click="toggleBlock(dev)">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/><circle cx="12" cy="16" r="1"/></svg>
+            </button>
+            <button v-else class="dm-act" title="封禁" @click="toggleBlock(dev)">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#dc2626" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0110 0v4"/><line x1="3" y1="3" x2="21" y2="21"/></svg>
+            </button>
+            <button class="dm-act" title="限速" @click="showLimit(dev)">⚡</button>
             <button class="dm-act" title="重命名" @click="showRename(dev)">✎</button>
           </div>
         </div>
