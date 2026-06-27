@@ -50,6 +50,7 @@ func main() {
 	retypeUnknown()
 
 	nftInit()
+	nftSetSubnet(lanSubnet)
 	restoreRateLimits()
 
 	// Wire discover package dependencies
