@@ -1,4 +1,5 @@
 const API = '/cgi-bin/luci/admin/network/devman/api';
+let ROUTER_IP = '';
 const VENDOR_COLORS = {
   Xiaomi: '#ff6900', Samsung: '#3c6cfa', Apple: '#555',
   Huawei: '#cf0a2c', OnePlus: '#eb0028', Google: '#4285f4',

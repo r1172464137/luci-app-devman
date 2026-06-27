@@ -85,14 +85,14 @@ func calcSpeed() {
 		spPrevUp[ip] = curUp[ip]
 		spPrevDown[ip] = curDown[ip]
 		if up > 0 {
-			speedOut[ip] = up
-		} else {
-			speedOut[ip] = 0
-		}
-		if dn > 0 {
-			speedIn[ip] = dn
+			speedIn[ip] = up
 		} else {
 			speedIn[ip] = 0
+		}
+		if dn > 0 {
+			speedOut[ip] = dn
+		} else {
+			speedOut[ip] = 0
 		}
 		if up > 0 || dn > 0 {
 			db.Model(&Device{}).Where("ipv4 = ?", ip).Update("last_seen", now)

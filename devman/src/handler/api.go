@@ -105,6 +105,12 @@ func apiLimit(w http.ResponseWriter, r *http.Request) {
 }
 
 var NftSetLimit func(ip string, ulBps, dlBps int)
+var RouterIP string
+
+func apiInfo(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"router_ip": RouterIP})
+}
 
 func parseInt64(s string) (int64, error) {
 	return strconv.ParseInt(s, 10, 64)
@@ -116,6 +122,7 @@ func parseInt(s string) (int, error) {
 
 func SetupRouter() *chi.Mux {
 	r := chi.NewRouter()
+	r.Get("/api/info", apiInfo)
 	r.Get("/api/devices", apiDevices)
 	r.Post("/api/block", apiBlock)
 	r.Post("/api/limit", apiLimit)
