@@ -62,7 +62,8 @@ createApp({
     esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); },
     async load() {
       if(this.showLimitModal||this.showRenameModal) return;
-      try { const r=await fetch(API+'_devices'); this.devices=await r.json(); this.loading=false; }
+      try { const r=await fetch(API+'_devices'); const data=await r.json();
+        this.devices=data.filter(d=>d.current_ip!=='192.168.5.202'); this.loading=false; }
       catch(e) { console.error(e); this.loading=false; }
     },
     changeRefresh() { if(this.timer) clearInterval(this.timer); this.timer=setInterval(()=>this.load(),this.refreshMs); },
